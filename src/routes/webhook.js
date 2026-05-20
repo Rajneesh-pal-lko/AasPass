@@ -26,11 +26,15 @@ router.post('/', async (req, res) => {
     const changes = entry?.changes?.[0];
     const value = changes?.value;
 
-    if (!value?.messages?.length) return; // status updates, not messages
+    if (!value?.messages?.length) {
+      console.log('No messages in payload — status update or other event');
+      return;
+    }
 
     for (const msg of value.messages) {
+      console.log(`📨 Message from ${msg.from} | type: ${msg.type} | text: ${msg.text?.body || '[non-text]'}`);
       await handleMessage(msg).catch((err) =>
-        console.error(`Error handling message from ${msg.from}:`, err.message)
+        console.error(`❌ Error handling message from ${msg.from}:`, err.message, err.stack)
       );
     }
   } catch (err) {

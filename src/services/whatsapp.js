@@ -11,9 +11,10 @@ async function sendMessage(to, payload) {
   const body = { messaging_product: 'whatsapp', to, ...payload };
   try {
     const res = await axios.post(BASE_URL, body, { headers: headers() });
+    console.log(`✅ Message sent to ${to}`);
     return res.data;
   } catch (err) {
-    console.error('WhatsApp send error:', err.response?.data || err.message);
+    console.error(`❌ WhatsApp send error to ${to}:`, JSON.stringify(err.response?.data || err.message));
     throw err;
   }
 }
