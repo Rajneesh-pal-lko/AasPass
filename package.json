@@ -17,6 +17,10 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "node-cron": "^4.2.1",
-    "razorpay": "^2.9.6"
+    "razorpay": "^2.9.6",
+    "ws": "^8.20.1"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
