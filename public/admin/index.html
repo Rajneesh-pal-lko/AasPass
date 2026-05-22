@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AasPass Admin</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #111b21;
+      color: #e9edef;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      background: #202c33;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #2a3942;
+      flex-shrink: 0;
+    }
+    .topbar h1 { color: #00a884; font-size: 18px; font-weight: 700; }
+    .topbar .stats { display: flex; gap: 24px; }
+    .topbar .stat { text-align: center; }
+    .topbar .stat-val { font-size: 18px; font-weight: 700; color: #00a884; }
+    .topbar .stat-label { font-size: 11px; color: #8696a0; }
+    .topbar .actions { display: flex; gap: 10px; align-items: center; }
+    .btn {
+      padding: 7px 14px;
+      border-radius: 6px;
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.8; }
+    .btn-danger { background: #7b3333; color: #ff6b6b; }
+    .btn-secondary { background: #2a3942; color: #8696a0; }
+
+    /* ── Main layout ── */
+    .app {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Left panel — conversation list ── */
+    .sidebar {
+      width: 360px;
+      border-right: 1px solid #2a3942;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .search-bar {
+      padding: 10px 12px;
+      background: #111b21;
+      border-bottom: 1px solid #2a3942;
+    }
+    .search-bar input {
+      width: 100%;
+      background: #202c33;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 14px;
+      color: #e9edef;
+      font-size: 14px;
+      outline: none;
+    }
+    .search-bar input::placeholder { color: #8696a0; }
+
+    .conv-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .conv-list::-webkit-scrollbar { width: 4px; }
+    .conv-list::-webkit-scrollbar-thumb { background: #3b4a54; border-radius: 4px; }
+
+    .conv-item {
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      border-bottom: 1px solid #1a2328;
+      transition: background 0.15s;
+    }
+    .conv-item:hover { background: #202c33; }
+    .conv-item.active { background: #2a3942; }
+
+    .avatar {
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: #2a3942;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+      color: #8696a0;
+      font-weight: 600;
+    }
+    .avatar.active-user { background: #00a884; color: white; }
+
+    .conv-info { flex: 1; min-width: 0; }
+    .conv-header { display: flex; justify-content: space-between; align-items: baseline; }
+    .conv-name { font-size: 15px; font-weight: 600; color: #e9edef; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+    .conv-time { font-size: 11px; color: #8696a0; flex-shrink: 0; }
+    .conv-preview { font-size: 13px; color: #8696a0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+    .conv-preview.outgoing { color: #8696a0; }
+    .conv-meta { display: flex; gap: 6px; margin-top: 4px; align-items: center; }
+    .badge {
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+    .badge-state { background: #2a3942; color: #8696a0; }
+    .badge-active { background: #003d2e; color: #00a884; }
+    .badge-matched { background: #1a3a5c; color: #53bdeb; }
+
+    /* ── Chat panel ── */
+    .chat-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #0b141a;
+      position: relative;
+    }
+
+    .chat-bg {
+      position: absolute;
+      inset: 0;
+      opacity: 0.03;
+      background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+    }
+
+    /* Empty state */
+    .empty-chat {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #8696a0;
+      position: relative;
+      z-index: 1;
+    }
+    .empty-chat .icon { font-size: 64px; margin-bottom: 16px; }
+    .empty-chat h2 { font-size: 22px; font-weight: 400; color: #e9edef; margin-bottom: 8px; }
+    .empty-chat p { font-size: 14px; }
+
+    /* Chat header */
+    .chat-header {
+      background: #202c33;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      border-bottom: 1px solid #2a3942;
+      position: relative;
+      z-index: 1;
+      flex-shrink: 0;
+    }
+    .chat-header .user-info { flex: 1; }
+    .chat-header .user-name { font-size: 16px; font-weight: 600; }
+    .chat-header .user-sub { font-size: 12px; color: #8696a0; margin-top: 2px; }
+    .chat-header .detail-btn {
+      padding: 7px 14px;
+      background: #2a3942;
+      border: none;
+      border-radius: 6px;
+      color: #8696a0;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .chat-header .detail-btn:hover { background: #3b4a54; color: #e9edef; }
+
+    /* Messages area */
+    .messages-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 10%;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      position: relative;
+      z-index: 1;
+    }
+    .messages-area::-webkit-scrollbar { width: 4px; }
+    .messages-area::-webkit-scrollbar-thumb { background: #3b4a54; border-radius: 4px; }
+
+    .date-divider {
+      text-align: center;
+      margin: 12px 0;
+    }
+    .date-divider span {
+      background: #182229;
+      color: #8696a0;
+      font-size: 12px;
+      padding: 5px 12px;
+      border-radius: 8px;
+    }
+
+    .msg-row {
+      display: flex;
+      margin: 2px 0;
+    }
+    .msg-row.incoming { justify-content: flex-start; }
+    .msg-row.outgoing { justify-content: flex-end; }
+
+    .bubble {
+      max-width: 65%;
+      padding: 8px 12px 6px;
+      border-radius: 8px;
+      position: relative;
+      word-break: break-word;
+    }
+    .msg-row.incoming .bubble {
+      background: #202c33;
+      border-top-left-radius: 2px;
+    }
+    .msg-row.outgoing .bubble {
+      background: #005c4b;
+      border-top-right-radius: 2px;
+    }
+
+    .bubble .msg-text { font-size: 14px; line-height: 1.4; white-space: pre-wrap; }
+    .bubble .msg-type-badge {
+      display: inline-block;
+      font-size: 10px;
+      background: rgba(255,255,255,0.1);
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-bottom: 4px;
+      color: #8696a0;
+    }
+    .bubble .msg-meta {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .bubble .msg-time { font-size: 11px; color: #8696a0; }
+    .bubble .msg-tick { font-size: 12px; color: #53bdeb; }
+    .bubble .detail-toggle {
+      font-size: 10px;
+      color: #8696a0;
+      cursor: pointer;
+      margin-top: 4px;
+      text-decoration: underline;
+    }
+    .bubble .raw-detail {
+      display: none;
+      margin-top: 8px;
+      padding: 8px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 4px;
+      font-size: 11px;
+      color: #8696a0;
+      font-family: monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* ── Right panel — user details ── */
+    .detail-panel {
+      width: 320px;
+      border-left: 1px solid #2a3942;
+      background: #111b21;
+      display: none;
+      flex-direction: column;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+    .detail-panel.open { display: flex; }
+    .detail-panel::-webkit-scrollbar { width: 4px; }
+    .detail-panel::-webkit-scrollbar-thumb { background: #3b4a54; border-radius: 4px; }
+
+    .detail-header {
+      background: #202c33;
+      padding: 16px 20px;
+      border-bottom: 1px solid #2a3942;
+    }
+    .detail-header h3 { font-size: 16px; font-weight: 600; color: #e9edef; }
+
+    .detail-section {
+      padding: 16px 20px;
+      border-bottom: 1px solid #2a3942;
+    }
+    .detail-section h4 {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #00a884;
+      margin-bottom: 12px;
+    }
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+    .detail-row .label { font-size: 12px; color: #8696a0; flex-shrink: 0; }
+    .detail-row .value { font-size: 13px; color: #e9edef; text-align: right; max-width: 180px; word-break: break-all; }
+    .detail-row .value.state { font-weight: 600; color: #00a884; }
+
+    /* Loading */
+    .loading { text-align: center; padding: 40px; color: #8696a0; font-size: 14px; }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <h1>✈️ AasPass Admin</h1>
+  <div class="stats" id="stats">
+    <div class="stat"><div class="stat-val" id="s-total">—</div><div class="stat-label">Total Users</div></div>
+    <div class="stat"><div class="stat-val" id="s-active">—</div><div class="stat-label">Active Now</div></div>
+    <div class="stat"><div class="stat-val" id="s-matches">—</div><div class="stat-label">Total Matches</div></div>
+    <div class="stat"><div class="stat-val" id="s-done">—</div><div class="stat-label">Completed</div></div>
+    <div class="stat"><div class="stat-val" id="s-msgs">—</div><div class="stat-label">Messages</div></div>
+  </div>
+  <div class="actions">
+    <button class="btn btn-secondary" onclick="loadConversations()">🔄 Refresh</button>
+    <button class="btn btn-danger" onclick="clearMessages()">🗑 Clear Old Msgs</button>
+    <a href="/admin/logout" class="btn btn-secondary" style="text-decoration:none">Sign Out</a>
+  </div>
+</div>
+
+<!-- Main app -->
+<div class="app">
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="search-bar">
+      <input type="text" id="search" placeholder="🔍 Search by name or number..." oninput="filterConversations()">
+    </div>
+    <div class="conv-list" id="conv-list">
+      <div class="loading">Loading conversations...</div>
+    </div>
+  </div>
+
+  <!-- Chat area -->
+  <div class="chat-panel" id="chat-panel">
+    <div class="chat-bg"></div>
+    <div class="empty-chat" id="empty-chat">
+      <div class="icon">💬</div>
+      <h2>AasPass Admin</h2>
+      <p>Select a conversation to view messages</p>
+    </div>
+    <div id="chat-view" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
+      <div class="chat-header" id="chat-header"></div>
+      <div class="messages-area" id="messages-area"></div>
+    </div>
+  </div>
+
+  <!-- Detail panel -->
+  <div class="detail-panel" id="detail-panel"></div>
+
+</div>
+
+<script>
+  let conversations = [];
+  let activePhone = null;
+  let detailOpen = false;
+  let autoRefresh = null;
+
+  // ── Load stats ──
+  async function loadStats() {
+    const res = await fetch('/admin/api/stats');
+    const d = await res.json();
+    document.getElementById('s-total').textContent = d.totalUsers ?? '—';
+    document.getElementById('s-active').textContent = d.activeUsers ?? '—';
+    document.getElementById('s-matches').textContent = d.totalMatches ?? '—';
+    document.getElementById('s-done').textContent = d.completedMatches ?? '—';
+    document.getElementById('s-msgs').textContent = d.totalMessages ?? '—';
+  }
+
+  // ── Load conversations ──
+  async function loadConversations() {
+    const res = await fetch('/admin/api/conversations');
+    conversations = await res.json();
+    renderConversations(conversations);
+    loadStats();
+  }
+
+  function renderConversations(list) {
+    const el = document.getElementById('conv-list');
+    if (!list.length) { el.innerHTML = '<div class="loading">No conversations yet</div>'; return; }
+
+    el.innerHTML = list.map(c => {
+      const name = c.name || formatPhone(c.phone);
+      const preview = (c.lastDirection === 'outgoing' ? '🤖 ' : '') + (c.lastMessage || '');
+      const time = formatTime(c.lastTime);
+      const avatarChar = (c.name || c.phone).charAt(0).toUpperCase();
+      const isActive = c.isActive;
+      const stateClass = c.state === 'MATCHED' ? 'badge-matched' : isActive ? 'badge-active' : 'badge-state';
+
+      return `
+        <div class="conv-item ${activePhone === c.phone ? 'active' : ''}" onclick="openChat('${c.phone}')">
+          <div class="avatar ${isActive ? 'active-user' : ''}">${avatarChar}</div>
+          <div class="conv-info">
+            <div class="conv-header">
+              <span class="conv-name">${name}</span>
+              <span class="conv-time">${time}</span>
+            </div>
+            <div class="conv-preview ${c.lastDirection}">${escHtml(preview.substring(0, 60))}</div>
+            <div class="conv-meta">
+              <span class="badge ${stateClass}">${c.state}</span>
+              ${c.flightNumber ? `<span class="badge badge-state">✈ ${c.flightNumber}</span>` : ''}
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  function filterConversations() {
+    const q = document.getElementById('search').value.toLowerCase();
+    const filtered = conversations.filter(c =>
+      (c.name || '').toLowerCase().includes(q) ||
+      c.phone.includes(q) ||
+      (c.flightNumber || '').toLowerCase().includes(q)
+    );
+    renderConversations(filtered);
+  }
+
+  // ── Open chat ──
+  async function openChat(phone) {
+    activePhone = phone;
+    detailOpen = false;
+    document.getElementById('detail-panel').classList.remove('open');
+    document.getElementById('empty-chat').style.display = 'none';
+    const cv = document.getElementById('chat-view');
+    cv.style.display = 'flex';
+
+    // Update active state in list
+    document.querySelectorAll('.conv-item').forEach(el => el.classList.remove('active'));
+    const conv = conversations.find(c => c.phone === phone);
+    renderConversations(conversations); // re-render to update active class
+
+    // Load messages
+    document.getElementById('messages-area').innerHTML = '<div class="loading">Loading...</div>';
+    renderChatHeader(conv, phone);
+
+    const res = await fetch(`/admin/api/messages/${phone}`);
+    const msgs = await res.json();
+    renderMessages(msgs);
+
+    // Auto-refresh every 5 seconds
+    if (autoRefresh) clearInterval(autoRefresh);
+    autoRefresh = setInterval(async () => {
+      if (activePhone !== phone) return;
+      const r = await fetch(`/admin/api/messages/${phone}`);
+      const m = await r.json();
+      renderMessages(m);
+    }, 5000);
+  }
+
+  function renderChatHeader(conv, phone) {
+    const name = conv?.name || formatPhone(phone);
+    const sub = conv?.name ? formatPhone(phone) : '';
+    document.getElementById('chat-header').innerHTML = `
+      <div class="avatar ${conv?.isActive ? 'active-user' : ''}" style="width:40px;height:40px;font-size:16px">
+        ${(conv?.name || phone).charAt(0).toUpperCase()}
+      </div>
+      <div class="user-info">
+        <div class="user-name">${name}</div>
+        <div class="user-sub">${sub} • ${conv?.state || 'IDLE'} ${conv?.flightNumber ? '• ✈ ' + conv.flightNumber : ''}</div>
+      </div>
+      <button class="detail-btn" onclick="toggleDetail('${phone}')">👤 User Details</button>
+    `;
+  }
+
+  function renderMessages(msgs) {
+    const area = document.getElementById('messages-area');
+    if (!msgs.length) { area.innerHTML = '<div class="loading">No messages yet</div>'; return; }
+
+    let lastDate = '';
+    let html = '';
+
+    for (const msg of msgs) {
+      const date = new Date(msg.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+      if (date !== lastDate) {
+        html += `<div class="date-divider"><span>${date}</span></div>`;
+        lastDate = date;
+      }
+
+      const time = new Date(msg.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      const dir = msg.direction;
+      const isOut = dir === 'outgoing';
+      const rawJson = JSON.stringify(msg.raw_payload, null, 2);
+      const msgId = `msg-${msg.id}`;
+
+      let typeBadge = '';
+      if (msg.message_type && msg.message_type !== 'text') {
+        typeBadge = `<div class="msg-type-badge">${msg.message_type}</div>`;
+      }
+
+      html += `
+        <div class="msg-row ${dir}">
+          <div class="bubble">
+            ${typeBadge}
+            <div class="msg-text">${escHtml(msg.message_text || '')}</div>
+            <div class="msg-meta">
+              ${msg.user_state ? `<span style="font-size:10px;color:#8696a0">${msg.user_state}</span>` : ''}
+              <span class="msg-time">${time}</span>
+              ${isOut ? '<span class="msg-tick">✓✓</span>' : ''}
+            </div>
+            <div class="detail-toggle" onclick="toggleRaw('${msgId}')">more details</div>
+            <div class="raw-detail" id="${msgId}">${escHtml(rawJson)}</div>
+          </div>
+        </div>`;
+    }
+
+    area.innerHTML = html;
+    area.scrollTop = area.scrollHeight;
+  }
+
+  function toggleRaw(id) {
+    const el = document.getElementById(id);
+    el.style.display = el.style.display === 'block' ? 'none' : 'block';
+  }
+
+  // ── User detail panel ──
+  async function toggleDetail(phone) {
+    const panel = document.getElementById('detail-panel');
+    if (detailOpen) {
+      panel.classList.remove('open');
+      detailOpen = false;
+      return;
+    }
+    detailOpen = true;
+    panel.classList.add('open');
+    panel.innerHTML = '<div class="loading">Loading user details...</div>';
+
+    const res = await fetch(`/admin/api/user/${phone}`);
+    const { user, profile, matches } = await res.json();
+
+    panel.innerHTML = `
+      <div class="detail-header"><h3>👤 User Details</h3></div>
+
+      <div class="detail-section">
+        <h4>Profile</h4>
+        <div class="detail-row"><span class="label">Name</span><span class="value">${profile?.wa_name || 'Unknown'}</span></div>
+        <div class="detail-row"><span class="label">Phone</span><span class="value">+${phone}</span></div>
+        <div class="detail-row"><span class="label">First seen</span><span class="value">${formatDateTime(profile?.first_seen_at)}</span></div>
+        <div class="detail-row"><span class="label">Last seen</span><span class="value">${formatDateTime(profile?.last_seen_at)}</span></div>
+        <div class="detail-row"><span class="label">Messages</span><span class="value">${profile?.message_count || 0}</span></div>
+      </div>
+
+      <div class="detail-section">
+        <h4>Trip Details</h4>
+        <div class="detail-row"><span class="label">State</span><span class="value state">${user?.state || 'IDLE'}</span></div>
+        <div class="detail-row"><span class="label">Flight</span><span class="value">${user?.flight_number || '—'}</span></div>
+        <div class="detail-row"><span class="label">Arrival</span><span class="value">${user?.arrival_time || '—'}</span></div>
+        <div class="detail-row"><span class="label">Airport</span><span class="value">${user?.departure_airport || '—'}</span></div>
+        <div class="detail-row"><span class="label">Drop zone</span><span class="value">${user?.drop_zone || '—'}</span></div>
+        <div class="detail-row"><span class="label">Active</span><span class="value">${user?.is_active ? '✅ Yes' : '❌ No'}</span></div>
+        <div class="detail-row"><span class="label">Matched</span><span class="value">${user?.is_matched ? '✅ Yes' : '❌ No'}</span></div>
+        <div class="detail-row"><span class="label">Payment</span><span class="value">${user?.payment_verified ? '✅ Verified' : '❌ Pending'}</span></div>
+      </div>
+
+      <div class="detail-section">
+        <h4>Location</h4>
+        <div class="detail-row"><span class="label">Airport lat</span><span class="value">${user?.departure_lat || '—'}</span></div>
+        <div class="detail-row"><span class="label">Airport lon</span><span class="value">${user?.departure_long || '—'}</span></div>
+        <div class="detail-row"><span class="label">Drop lat</span><span class="value">${user?.drop_lat || '—'}</span></div>
+        <div class="detail-row"><span class="label">Drop lon</span><span class="value">${user?.drop_long || '—'}</span></div>
+      </div>
+
+      <div class="detail-section">
+        <h4>Match History (${matches.length})</h4>
+        ${matches.length === 0 ? '<div style="color:#8696a0;font-size:13px">No match history</div>' :
+          matches.map(m => `
+            <div style="padding:8px;background:#202c33;border-radius:6px;margin-bottom:8px;font-size:12px">
+              <div style="display:flex;justify-content:space-between">
+                <span style="color:#8696a0">${formatDateTime(m.created_at)}</span>
+                <span style="color:${statusColor(m.status)};font-weight:600">${m.status}</span>
+              </div>
+              <div style="color:#e9edef;margin-top:4px">${m.distance_km ? m.distance_km.toFixed(1) + 'km apart' : ''}</div>
+            </div>`).join('')
+        }
+      </div>
+
+      <div class="detail-section">
+        <h4>Raw User Data</h4>
+        <pre style="font-size:11px;color:#8696a0;white-space:pre-wrap;word-break:break-all">${escHtml(JSON.stringify(user, null, 2))}</pre>
+      </div>
+    `;
+  }
+
+  // ── Clear messages ──
+  async function clearMessages() {
+    const months = prompt('Clear messages older than how many months? (default: 6)', '6');
+    if (!months) return;
+    if (!confirm(`Delete all messages older than ${months} months?`)) return;
+    const res = await fetch(`/admin/api/clear-messages?months=${months}`, { method: 'DELETE' });
+    const d = await res.json();
+    if (d.success) { alert('Cleared successfully'); loadConversations(); }
+    else alert('Error: ' + d.error);
+  }
+
+  // ── Helpers ──
+  function formatPhone(phone) {
+    return '+' + phone;
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    }
+    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  }
+
+  function formatDateTime(ts) {
+    if (!ts) return '—';
+    return new Date(ts).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function statusColor(status) {
+    const colors = {
+      completed: '#00a884', accepted: '#53bdeb', pending: '#ffd279',
+      declined: '#ff6b6b', expired: '#8696a0', cancelled_by_sender: '#ff9800',
+    };
+    return colors[status] || '#8696a0';
+  }
+
+  function escHtml(str) {
+    return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── Init ──
+  loadConversations();
+  setInterval(loadConversations, 15000); // refresh list every 15s
+</script>
+</body>
+</html>

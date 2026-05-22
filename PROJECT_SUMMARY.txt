@@ -1,0 +1,285 @@
+# AasPass — Complete Project Summary
+
+---
+
+## What Is AasPass?
+A **WhatsApp-native cab splitting platform**. No app download. Users discover it via Instagram ads, open WhatsApp, and a bot matches them with fellow passengers on the same flight heading to the same area — so they can split a cab and save money.
+
+**First market:** Hyderabad Airport (70,000 daily passengers)
+
+---
+
+## How It Works (User Journey)
+
+```
+User sees Instagram ad at airport
+        ↓
+Taps ad → opens WhatsApp → sends "hi"
+        ↓
+Bot asks: Which city? (Hyderabad / Bangalore / Delhi)
+        ↓
+Bot asks: Share your location (confirms they're at airport)
+        ↓
+Bot asks: Flight number? (e.g. 6E-204)
+        ↓
+Bot asks: Arrival time? (e.g. 16:45)
+        ↓
+Bot asks: Drop location? (share pin)
+        ↓
+Bot shows summary → user confirms
+        ↓
+Server searches for matches (same flight + drop within 5km)
+        ↓
+If match found → shows ranked list → user picks one
+        ↓
+Other person gets Accept/Decline request
+        ↓
+If accepted → User A pays ₹1 via Razorpay
+        ↓
+Both get each other's WhatsApp numbers
+        ↓
+They meet at Arrivals, split an Uber 50/50
+        ↓
+Bot asks: Did it work? → Done / Issue
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Node.js |
+| Framework | Express.js |
+| Database | Supabase (PostgreSQL) |
+| Deployment | Railway.app |
+| Messaging | Meta WhatsApp Cloud API |
+| Payments | Razorpay |
+| Distance | Haversine formula |
+| Scheduler | node-cron |
+
+---
+
+## Project Folder Structure
+
+```
+AasPass/
+├── index.js                    ← Server entry point
+├── package.json                ← Dependencies + scripts
+├── railway.toml                ← Railway deployment config
+├── .env.example                ← All required env variables
+├── .gitignore
+├── supabase_schema.sql         ← All 4 database tables
+└── src/
+    ├── config/
+    │   └── supabase.js         ← Lazy Supabase client
+    ├── routes/
+    │   ├── webhook.js          ← Meta webhook (GET verify + POST messages)
+    │   └── razorpay.js         ← Payment webhook + callback
+    ├── handlers/
+    │   └── conversation.js     ← Full state machine (brain of the bot)
+    ├── services/
+    │   ├── whatsapp.js         ← All message senders
+    │   ├── matching.js         ← Match finder + notifier
+    │   ├── razorpay.js         ← Payment link creator
+    │   └── cleanup.js          ← Cron job (expires old spots)
+    └── utils/
+        └── haversine.js        ← Distance calculator + airport detector
+```
+
+---
+
+## State Machine (User States)
+
+```
+IDLE
+  → sends "hi"
+ONBOARDING_CITY
+  → picks city
+ONBOARDING_LOCATION
+  → shares airport location
+ONBOARDING_FLIGHT
+  → types flight number
+ONBOARDING_ARRIVAL
+  → types arrival time
+ONBOARDING_DROP
+  → shares drop pin
+ONBOARDING_CONFIRM
+  → confirms details
+WAITING
+  → sends match request
+MATCH_SENT         → (declined/expired) → WAITING
+  → other accepts
+MATCH_RECEIVED     → (declines) → WAITING
+  → accepts
+MATCHED            → (cancel) → WAITING
+  → says DONE
+COMPLETED
+```
+
+---
+
+## Database Tables (Supabase)
+
+**users** — every person who onboards
+```
+user_id, phone, flight_number, arrival_time,
+departure_airport, departure_lat, departure_long,
+drop_zone, drop_lat, drop_long,
+state, is_matched, is_active, payment_verified,
+matched_with, pending_request_id,
+created_at, updated_at
+```
+
+**match_requests** — every match attempt
+```
+request_id, from_user, to_user, distance_km,
+status (pending/accepted/declined/cancelled/expired/completed),
+cancelled_by, cancelled_at, confirmed_by, confirmed_at,
+issue_reported, created_at, responded_at
+```
+
+**confirmed_matches** — successful pairs
+```
+match_id, user_a, user_b, flight_number,
+distance_km, confirmed_at
+```
+
+**support_queue** — reported issues
+```
+issue_id, user_id, match_id, issue_type,
+description, created_at, resolved
+```
+
+---
+
+## WhatsApp Message Types Used
+
+| Step | Message Type |
+|------|-------------|
+| City selection | Button Message (3 buttons) |
+| Location request | Location Request Message |
+| Drop zone | Location Request Message |
+| Confirm details | Button Message (Yes/No) |
+| View matches | List Message (ranked by distance) |
+| Accept/Decline | Button Message |
+| Payment | CTA URL Button (Razorpay link) |
+| Trip confirmation | Button Message (Done/Issue) |
+
+---
+
+## Commands the Bot Understands
+
+| Command | What it does |
+|---------|-------------|
+| `hi` / `start` | Begin onboarding |
+| `MATCHES` | View available matches |
+| `CANCEL` | Cancel request or match |
+| `CONFIRM CANCEL` | Confirm cancellation |
+| `BACK` | Keep current match |
+| `DONE` | Trip completed |
+| `ISSUE` | Report a problem |
+| `STATUS` | Check current state |
+| `RESTART` | Start fresh |
+| `STOP` | Unsubscribe |
+| `HELP` | Show all commands |
+
+---
+
+## Matching Logic
+
+- Finds users with the **same flight number**
+- Who are **active + unmatched**
+- Whose drop pin is **within 5km** of yours
+- Sorts by **closest distance first**
+- Match request **expires in 10 minutes** if no response
+- User spots **expire after 2 hours** in waiting pool (cron job runs every 10 min)
+
+---
+
+## Revenue Model
+
+| Stage | Details |
+|-------|---------|
+| Verification fee | ₹1 UPI payment (identity check) |
+| Free trial | 3 months activated on first payment |
+| Subscription | ₹100 per 3 months via Razorpay AutoPay |
+| Target | 200,000 subscribers = ₹2 Crore revenue |
+
+---
+
+## Environment Variables (Railway)
+
+```
+WHATSAPP_TOKEN              ← Meta access token
+WHATSAPP_PHONE_NUMBER_ID    ← Bot's phone number ID
+WEBHOOK_VERIFY_TOKEN        ← aaspass_verify_2024
+SUPABASE_URL                ← https://xxxx.supabase.co
+SUPABASE_SERVICE_KEY        ← service_role key
+RAZORPAY_KEY_ID             ← rzp_test_xxxx
+RAZORPAY_KEY_SECRET         ← secret
+RAZORPAY_WEBHOOK_SECRET     ← webhook signature secret
+SERVER_URL                  ← https://aaspass-production.up.railway.app
+PORT                        ← 3000
+```
+
+---
+
+## What's Done ✅ vs Pending ⏳
+
+| Item | Status |
+|------|--------|
+| Full bot code | ✅ Done |
+| Database schema | ✅ Done |
+| Deployed to Railway | ✅ Done |
+| GitHub repo | ✅ Done |
+| Supabase tables created | ✅ Done |
+| Webhook registered on Meta | ✅ Done |
+| messages field subscribed | ✅ Done |
+| WhatsApp token (permanent) | ⏳ In progress |
+| End-to-end test with real numbers | ⏳ Pending |
+| Razorpay KYC complete | ⏳ Half done |
+| Meta Business Verification | ⏳ Pending |
+| App published on Meta | ⏳ Pending |
+| Instagram ad setup | ⏳ Future |
+
+---
+
+## Airports Supported (Launch)
+
+| Code | Airport |
+|------|---------|
+| HYD | Hyderabad — Rajiv Gandhi International |
+| BLR | Bangalore — Kempegowda International |
+| DEL | Delhi — Indira Gandhi International |
+
+Detection radius: **2km** from airport coordinates using Haversine formula.
+
+---
+
+## Current Status & Next Steps
+
+**BLOCKING ISSUE:** Need permanent WhatsApp token to go live.
+
+**Once token is in Railway env vars:**
+1. Bot will be fully functional end-to-end
+2. Can test with real WhatsApp numbers
+3. Can onboard first beta users
+
+**Remaining for production:**
+- Complete Razorpay KYC
+- Meta Business Verification
+- Publish app on Meta
+- Set up Instagram ads
+- Launch marketing campaign
+
+---
+
+## Key Files for AI Reference
+
+- **CLAUDE.md** — Full technical context for AI assistants
+- **README.md** — Developer/user documentation
+- **PROJECT_SUMMARY.txt** — This file (business context)
+- **conversation.js** — State machine (brain of the bot)
+- **matching.js** — Match algorithm
+- **supabase_schema.sql** — Database structure

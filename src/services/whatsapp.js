@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { logMessage } = require('./messageLogger');
 
 const BASE_URL = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
@@ -12,6 +13,24 @@ async function sendMessage(to, payload) {
   try {
     const res = await axios.post(BASE_URL, body, { headers: headers() });
     console.log(`✅ Message sent to ${to}`);
+
+    // Log outgoing message
+    let messageText = '';
+    if (payload.type === 'text') messageText = payload.text?.body || '';
+    else if (payload.type === 'interactive') {
+      messageText = payload.interactive?.body?.text || '[interactive]';
+    } else {
+      messageText = `[${payload.type}]`;
+    }
+
+    await logMessage({
+      phone: to,
+      direction: 'outgoing',
+      messageType: payload.type || 'text',
+      messageText,
+      rawPayload: payload,
+    });
+
     return res.data;
   } catch (err) {
     console.error(`❌ WhatsApp send error to ${to}:`, JSON.stringify(err.response?.data || err.message));
