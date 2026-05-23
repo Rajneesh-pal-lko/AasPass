@@ -3,7 +3,7 @@ const { getDistanceKm } = require('../utils/haversine');
 const { sendText, sendButtons, sendList } = require('./whatsapp');
 
 const DROP_RADIUS_KM   = 5;     // drop destinations within 5 km
-const PICKUP_RADIUS_KM = 0.3;   // pickup must be within 300 m
+const PICKUP_RADIUS_KM = 0.5;   // pickup must be within 500 m (allows for urban GPS drift)
 
 /**
  * Find ranked match candidates for a given user.

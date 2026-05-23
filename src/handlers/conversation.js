@@ -3,6 +3,11 @@ const { sendText, sendButtons, sendList, sendCTAButton, sendLocationRequest } = 
 const { getDistanceKm } = require('../utils/haversine');
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode } = require('../services/geocoding');
+const { parseLocationFromText, isValidCoord } = require('../utils/locationParser');
+
+// Search window: 10 min initial, 5 min extension
+const SEARCH_WINDOW_MS  = 10 * 60 * 1000;
+const RETRY_WINDOW_MS   =  5 * 60 * 1000;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -44,6 +49,18 @@ function prefLabel(p) {
   if (p === 'M')   return 'Only Male';
   if (p === 'F')   return 'Only Female';
   return p || 'Anyone';
+}
+
+// Resolve lat/lon from WhatsApp location message OR pasted text (Maps link / coords)
+async function resolveLocation(locationLat, locationLon, rawText) {
+  if (locationLat && locationLon && isValidCoord(locationLat, locationLon)) {
+    return { lat: locationLat, lon: locationLon, fromText: false };
+  }
+  if (rawText) {
+    const parsed = await parseLocationFromText(rawText);
+    if (parsed) return { ...parsed, fromText: true };
+  }
+  return null;
 }
 
 // ── onboarding: name ─────────────────────────────────────────────────────────
@@ -253,29 +270,36 @@ async function handleMessage(msg, waName) {
 
     // ── ONBOARDING: PICKUP LOCATION ───────────────────────────────────────────
     case 'ONBOARDING_PICKUP': {
-      if (!locationLat) {
-        return sendText(phone, `Please share your *pickup location* 📍\n\nTap 📎 → Location → search or use current location.`);
+      const loc = await resolveLocation(locationLat, locationLon, rawText);
+      if (!loc) {
+        return sendText(phone,
+          `Please share your *pickup location* 📍\n\n` +
+          `• Tap 📎 → Location → search or use current location\n` +
+          `• Or paste a Google Maps / Apple Maps link\n` +
+          `• Or type coordinates: *17.2403, 78.4294*`
+        );
       }
-      const pickup_label = await reverseGeocode(locationLat, locationLon);
+      const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       await setState(phone, 'ONBOARDING_DROP', {
-        departure_lat:    locationLat,
-        departure_long:   locationLon,
-        pickup_label,
+        departure_lat: loc.lat, departure_long: loc.lon, pickup_label,
       });
       return sendDropPrompt(phone, pickup_label);
     }
 
     // ── ONBOARDING: DROP LOCATION ─────────────────────────────────────────────
     case 'ONBOARDING_DROP': {
-      if (!locationLat) {
-        return sendText(phone, `Please share your *drop destination* 📍\n\nTap 📎 → Location → search any city or destination.`);
+      const loc = await resolveLocation(locationLat, locationLon, rawText);
+      if (!loc) {
+        return sendText(phone,
+          `Please share your *drop destination* 📍\n\n` +
+          `• Tap 📎 → Location → search any city\n` +
+          `• Or paste a Google Maps / Apple Maps link\n` +
+          `• Or type coordinates: *28.6139, 77.2090*`
+        );
       }
-      const drop_label = await reverseGeocode(locationLat, locationLon);
+      const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'ONBOARDING_CONFIRM', {
-        drop_lat:  locationLat,
-        drop_long: locationLon,
-        drop_label,
-        drop_zone: drop_label,
+        drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
       });
       return sendConfirmation(phone, updatedUser);
     }
@@ -310,9 +334,10 @@ async function handleMessage(msg, waName) {
 
       const now = new Date().toISOString();
       const activeUser = await setState(phone, 'WAITING', {
-        is_active: true,
-        is_matched: false,
+        is_active:         true,
+        is_matched:        false,
         search_started_at: now,
+        expires_at:        new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
       });
 
       await syncProfileFields(phone, activeUser);
@@ -352,31 +377,35 @@ async function handleMessage(msg, waName) {
 
     // ── EDITING: PICKUP ───────────────────────────────────────────────────────
     case 'EDITING_PICKUP': {
-      if (!locationLat) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location → search or use current location.`);
-      const pickup_label = await reverseGeocode(locationLat, locationLon);
+      const loc = await resolveLocation(locationLat, locationLon, rawText);
+      if (!loc) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, paste a Maps link, or type coordinates.`);
+      const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
-        departure_lat: locationLat, departure_long: locationLon, pickup_label,
+        departure_lat: loc.lat, departure_long: loc.lon, pickup_label,
       });
       return sendConfirmation(phone, updated);
     }
 
     // ── EDITING: DROP ─────────────────────────────────────────────────────────
     case 'EDITING_DROP': {
-      if (!locationLat) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location → search any city or destination.`);
-      const drop_label = await reverseGeocode(locationLat, locationLon);
+      const loc = await resolveLocation(locationLat, locationLon, rawText);
+      if (!loc) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, paste a Maps link, or type coordinates.`);
+      const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
-        drop_lat: locationLat, drop_long: locationLon, drop_label, drop_zone: drop_label,
+        drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
       });
       return sendConfirmation(phone, updated);
     }
 
     // ── POOL EDIT: PICKUP (while in WAITING pool) ─────────────────────────────
     case 'POOL_EDIT_PICKUP': {
-      if (!locationLat) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location → search or use current location.`);
-      const pickup_label = await reverseGeocode(locationLat, locationLon);
+      const loc = await resolveLocation(locationLat, locationLon, rawText);
+      if (!loc) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, paste a Maps link, or type coordinates.`);
+      const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
-        departure_lat: locationLat, departure_long: locationLon, pickup_label,
+        departure_lat: loc.lat, departure_long: loc.lon, pickup_label,
         search_started_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
       });
       await sendText(phone, `✅ Pickup updated to: *${pickup_label}*\n\nSearching for new matches...`);
       const matchesP = await findMatches(updatedUser);
@@ -385,11 +414,13 @@ async function handleMessage(msg, waName) {
 
     // ── POOL EDIT: DROP (while in WAITING pool) ───────────────────────────────
     case 'POOL_EDIT_DROP': {
-      if (!locationLat) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location → search any city or destination.`);
-      const drop_label = await reverseGeocode(locationLat, locationLon);
+      const loc = await resolveLocation(locationLat, locationLon, rawText);
+      if (!loc) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, paste a Maps link, or type coordinates.`);
+      const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
-        drop_lat: locationLat, drop_long: locationLon, drop_label, drop_zone: drop_label,
+        drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
         search_started_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
       });
       await sendText(phone, `✅ Drop updated to: *${drop_label}*\n\nSearching for new matches...`);
       const matchesD = await findMatches(updatedUser);
@@ -429,7 +460,8 @@ async function handleMessage(msg, waName) {
       if (buttonId === 'RETRY_YES') {
         const extended = await setState(phone, 'WAITING', {
           search_started_at: new Date().toISOString(),
-          is_active: true,
+          is_active:  true,
+          expires_at: new Date(Date.now() + RETRY_WINDOW_MS).toISOString(),
         });
         const matches = await findMatches(extended);
         if (matches.length) return sendMatchResults(extended, matches);
@@ -643,23 +675,29 @@ async function handleAcceptMatch(toPhone, fromUserId, toUser) {
   const { data: fromUser } = await supabase.from('users').select('*').eq('user_id', fromUserId).single();
   if (!fromUser) return sendText(toPhone, `Something went wrong. Type STATUS to check.`);
 
+  // Find the pending request
   const { data: req } = await supabase
     .from('match_requests').select('*')
     .eq('from_user', fromUserId).eq('to_user', toUser.user_id).eq('status', 'pending').single();
 
   if (!req) return sendText(toPhone, `This request has already expired or been cancelled.`);
 
-  await supabase.from('match_requests')
-    .update({ status: 'accepted', responded_at: new Date().toISOString() })
-    .eq('request_id', req.request_id);
+  // Use SELECT FOR UPDATE via RPC to prevent double-acceptance race condition
+  const { data: result, error: rpcError } = await supabase
+    .rpc('accept_match_request', {
+      p_request_id:  req.request_id,
+      p_to_user_id:  toUser.user_id,
+    });
 
-  await setState(fromUser.phone, 'MATCHED', { is_matched: true, matched_with: toUser.user_id, pending_request_id: req.request_id });
-  await setState(toPhone,        'MATCHED', { is_matched: true, matched_with: fromUser.user_id, pending_request_id: req.request_id });
+  if (rpcError || !result?.success) {
+    const reason = result?.error || rpcError?.message || 'unknown';
+    console.error('accept_match_request RPC error:', reason);
+    return sendText(toPhone, `This request is no longer available. You're back in the pool!`);
+  }
 
-  await supabase.from('confirmed_matches').insert({
-    user_a: fromUser.user_id, user_b: toUser.user_id,
-    distance_km: req.distance_km, confirmed_at: new Date().toISOString(),
-  });
+  // Store pending_request_id on both user rows for contact sharing
+  await supabase.from('users').update({ pending_request_id: req.request_id }).eq('user_id', toUser.user_id);
+  await supabase.from('users').update({ pending_request_id: req.request_id }).eq('user_id', fromUser.user_id);
 
   // Send trust signals + Share Contact button to BOTH users
   await sendTrustSignals(fromUser.phone, fromUser, toUser, req);
