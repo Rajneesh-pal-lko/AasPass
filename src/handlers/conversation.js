@@ -105,14 +105,17 @@ async function sendPickupPrompt(phone, isReturning = false) {
   const prefix = isReturning
     ? `Welcome back to *AasPass* ✈️🚕\n\nLet's find you a match!\n\n`
     : `Great! Let's find you a match.\n\n`;
-  await sendLocationRequest(phone, `${prefix}*Step 1 of 2* — Share your *current location* 📍`);
+  await sendText(
+    phone,
+    `${prefix}*Step 1 of 2* — Share your *pickup location* 📍\n\nTap 📎 → Location → search any place or use current location.`
+  );
   await setState(phone, 'ONBOARDING_PICKUP');
 }
 
 async function sendDropPrompt(phone, pickupLabel) {
-  await sendLocationRequest(
+  await sendText(
     phone,
-    `📍 *Pickup:* ${pickupLabel}\n\n*Step 2 of 2* — Now share your *drop destination* 📍\n\nWhere do you need to go?`
+    `📍 *Pickup:* ${pickupLabel}\n\n*Step 2 of 2* — Share your *drop destination* 📍\n\nTap 📎 → Location → search for your destination (any city).`
   );
   await setState(phone, 'ONBOARDING_DROP');
 }
@@ -251,7 +254,7 @@ async function handleMessage(msg, waName) {
     // ── ONBOARDING: PICKUP LOCATION ───────────────────────────────────────────
     case 'ONBOARDING_PICKUP': {
       if (!locationLat) {
-        return sendLocationRequest(phone, `Please share your *current location* using the 📎 attachment button.`);
+        return sendText(phone, `Please share your *pickup location* 📍\n\nTap 📎 → Location → search or use current location.`);
       }
       const pickup_label = await reverseGeocode(locationLat, locationLon);
       await setState(phone, 'ONBOARDING_DROP', {
@@ -265,7 +268,7 @@ async function handleMessage(msg, waName) {
     // ── ONBOARDING: DROP LOCATION ─────────────────────────────────────────────
     case 'ONBOARDING_DROP': {
       if (!locationLat) {
-        return sendLocationRequest(phone, `Please share your *drop destination* using the 📎 attachment button.`);
+        return sendText(phone, `Please share your *drop destination* 📍\n\nTap 📎 → Location → search any city or destination.`);
       }
       const drop_label = await reverseGeocode(locationLat, locationLon);
       const updatedUser = await setState(phone, 'ONBOARDING_CONFIRM', {
@@ -349,7 +352,7 @@ async function handleMessage(msg, waName) {
 
     // ── EDITING: PICKUP ───────────────────────────────────────────────────────
     case 'EDITING_PICKUP': {
-      if (!locationLat) return sendLocationRequest(phone, `Share your new *pickup location* 📍`);
+      if (!locationLat) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location → search or use current location.`);
       const pickup_label = await reverseGeocode(locationLat, locationLon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
         departure_lat: locationLat, departure_long: locationLon, pickup_label,
@@ -359,7 +362,7 @@ async function handleMessage(msg, waName) {
 
     // ── EDITING: DROP ─────────────────────────────────────────────────────────
     case 'EDITING_DROP': {
-      if (!locationLat) return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
+      if (!locationLat) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location → search any city or destination.`);
       const drop_label = await reverseGeocode(locationLat, locationLon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
         drop_lat: locationLat, drop_long: locationLon, drop_label, drop_zone: drop_label,
@@ -369,7 +372,7 @@ async function handleMessage(msg, waName) {
 
     // ── POOL EDIT: PICKUP (while in WAITING pool) ─────────────────────────────
     case 'POOL_EDIT_PICKUP': {
-      if (!locationLat) return sendLocationRequest(phone, `Share your new *pickup location* 📍`);
+      if (!locationLat) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location → search or use current location.`);
       const pickup_label = await reverseGeocode(locationLat, locationLon);
       const updatedUser = await setState(phone, 'WAITING', {
         departure_lat: locationLat, departure_long: locationLon, pickup_label,
@@ -382,7 +385,7 @@ async function handleMessage(msg, waName) {
 
     // ── POOL EDIT: DROP (while in WAITING pool) ───────────────────────────────
     case 'POOL_EDIT_DROP': {
-      if (!locationLat) return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
+      if (!locationLat) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location → search any city or destination.`);
       const drop_label = await reverseGeocode(locationLat, locationLon);
       const updatedUser = await setState(phone, 'WAITING', {
         drop_lat: locationLat, drop_long: locationLon, drop_label, drop_zone: drop_label,
