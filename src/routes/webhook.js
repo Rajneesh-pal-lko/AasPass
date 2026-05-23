@@ -63,7 +63,7 @@ router.post('/', async (req, res) => {
         userState: null, // will be enriched by conversation handler
       });
 
-      await handleMessage(msg).catch((err) =>
+      await handleMessage(msg, waName).catch((err) =>
         console.error(`❌ Error handling message from ${msg.from}:`, err.message, err.stack)
       );
     }
