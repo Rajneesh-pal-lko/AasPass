@@ -1,10 +1,12 @@
 const supabase = require('../config/supabase');
 const { sendText, sendButtons, sendList, sendCTAButton, sendLocationRequest } = require('../services/whatsapp');
-const { detectAirport } = require('../utils/haversine');
+const { getDistanceKm } = require('../utils/haversine');
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { createVerificationPaymentLink } = require('../services/razorpay');
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+const PICKUP_RADIUS_KM = 2; // users must be within 2km of each other at pickup
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 async function getUser(phone) {
   const { data } = await supabase.from('users').select('*').eq('phone', phone).single();
@@ -25,57 +27,51 @@ async function setState(phone, state, extra = {}) {
   return upsertUser(phone, { state, updated_at: new Date().toISOString(), ...extra });
 }
 
+// Detect a human-readable venue name from coordinates
+function detectVenue(lat, lon) {
+  const VENUES = [
+    { name: 'Hyderabad Airport (RGIA)', lat: 17.2403, lon: 78.4294 },
+    { name: 'Bangalore Airport (KIA)',  lat: 13.1986, lon: 77.7066 },
+    { name: 'Delhi Airport (IGI)',      lat: 28.5562, lon: 77.1000 },
+  ];
+  for (const v of VENUES) {
+    if (getDistanceKm(lat, lon, v.lat, v.lon) <= 3) return v.name;
+  }
+  return null; // unknown venue — still allowed
+}
+
 // ── onboarding messages ───────────────────────────────────────────────────────
 
 async function sendWelcome(phone) {
-  await sendButtons(
+  await sendText(
     phone,
-    `Welcome to *AasPass* ✈️🚕\n\nStop paying solo cab prices! We match you with fellow passengers so you can split the ride.\n\nWhich airport are you at right now?`,
-    [
-      { id: 'CITY_HYD', title: 'Hyderabad' },
-      { id: 'CITY_BLR', title: 'Bangalore' },
-      { id: 'CITY_DEL', title: 'Delhi' },
-    ]
+    `Welcome to *AasPass* ✈️🚕\n\nStop paying solo cab prices! Share a ride with someone heading the same way.\n\nLet's find you a match in 2 steps.`
   );
-  await setState(phone, 'ONBOARDING_CITY');
+  await sendLocationRequest(phone, `*Step 1 of 2* — Share your *current location* 📍\n\nWe'll find others nearby.`);
+  await setState(phone, 'ONBOARDING_PICKUP');
 }
 
-async function sendLocationPrompt(phone) {
-  await sendLocationRequest(phone, `Great! Now share your *current location* 📍\n\nThis confirms which airport you are at.`);
-  await setState(phone, 'ONBOARDING_LOCATION');
-}
-
-async function sendFlightPrompt(phone) {
-  await sendText(phone, `✅ Airport confirmed!\n\nWhat is your *flight number*? (e.g. 6E-204)`);
-  await setState(phone, 'ONBOARDING_FLIGHT');
-}
-
-async function sendArrivalPrompt(phone) {
-  await sendText(phone, `Got it! What time does your flight *land*? (24-hr format, e.g. 16:45)`);
-  await setState(phone, 'ONBOARDING_ARRIVAL');
-}
-
-async function sendDropPrompt(phone) {
+async function sendDropPrompt(phone, venueName) {
+  const venueText = venueName ? `📍 You're at *${venueName}*\n\n` : `📍 Location confirmed!\n\n`;
   await sendLocationRequest(
     phone,
-    `Almost done! Drop a pin 📍 of *where you need to be dropped off* so I can find nearby matches.`
+    `${venueText}*Step 2 of 2* — Now share your *drop destination* 📍\n\nWhere do you need to go?`
   );
   await setState(phone, 'ONBOARDING_DROP');
 }
 
 async function sendConfirmation(phone, user) {
-  const summary =
-    `Here's your trip summary:\n\n` +
-    `✈️ Flight: *${user.flight_number}*\n` +
-    `🕐 Arrival: *${user.arrival_time}*\n` +
-    `🏢 Airport: *${user.departure_airport}*\n` +
-    `📍 Drop zone: *${user.drop_zone || 'Confirmed'}*\n\n` +
-    `Shall I search for cab-split partners?`;
+  const venue = user.departure_airport || `${parseFloat(user.departure_lat).toFixed(4)}, ${parseFloat(user.departure_long).toFixed(4)}`;
+  const drop = user.drop_zone || `${parseFloat(user.drop_lat).toFixed(4)}, ${parseFloat(user.drop_long).toFixed(4)}`;
 
-  await sendButtons(phone, summary, [
-    { id: 'CONFIRM_YES', title: '✅ Yes, Search!' },
-    { id: 'CONFIRM_NO',  title: '❌ No, Restart' },
-  ]);
+  await sendButtons(
+    phone,
+    `Here's your trip summary:\n\n📍 *Pickup:* ${venue}\n🎯 *Drop:* ${drop}\n\nShall I find you a cab-split partner?`,
+    [
+      { id: 'CONFIRM_YES', title: '✅ Yes, Find Match!' },
+      { id: 'CONFIRM_NO',  title: '❌ No, Restart' },
+    ]
+  );
   await setState(phone, 'ONBOARDING_CONFIRM');
 }
 
@@ -102,10 +98,10 @@ async function handleMessage(msg) {
     locationLon = msg.location?.longitude;
   }
 
-  // ── Global commands (work from any state) ──
+  // ── Global commands ──
   if (text === 'STOP') {
     await upsertUser(phone, { is_active: false, state: 'IDLE' });
-    return sendText(phone, `You have been unsubscribed from AasPass. Send "hi" anytime to rejoin. 👋`);
+    return sendText(phone, `You've been unsubscribed from AasPass. Send "hi" anytime to rejoin. 👋`);
   }
   if (text === 'HELP') return sendHelp(phone);
   if (text === 'STATUS') return sendStatus(phone);
@@ -114,55 +110,31 @@ async function handleMessage(msg) {
   const user = await getUser(phone);
   const state = user?.state || 'IDLE';
 
-  // ── State machine ──
   switch (state) {
+
     case 'IDLE':
     case 'COMPLETED':
       return sendWelcome(phone);
 
-    // ── ONBOARDING ──
-    case 'ONBOARDING_CITY': {
-      if (!buttonId.startsWith('CITY_')) return sendText(phone, 'Please tap one of the city buttons above.');
-      const cityCode = buttonId.replace('CITY_', '');
-      await setState(phone, 'ONBOARDING_LOCATION', { city_preference: cityCode });
-      return sendLocationPrompt(phone);
-    }
-
-    case 'ONBOARDING_LOCATION': {
-      if (!locationLat) return sendText(phone, 'Please share your location using the button above 📍');
-      const airport = detectAirport(locationLat, locationLon);
-      if (!airport) {
-        return sendText(
-          phone,
-          `We couldn't confirm an airport within 2km of your location.\n\nAre you at the airport yet? Only use AasPass when you have landed. ✈️`
-        );
+    // ── Step 1: Pickup location ──
+    case 'ONBOARDING_PICKUP': {
+      if (!locationLat) {
+        return sendLocationRequest(phone, `Please share your *current location* using the button above 📍`);
       }
-      await setState(phone, 'ONBOARDING_FLIGHT', {
-        departure_airport: airport.code,
+      const venueName = detectVenue(locationLat, locationLon);
+      await setState(phone, 'ONBOARDING_DROP', {
         departure_lat: locationLat,
         departure_long: locationLon,
+        departure_airport: venueName || `${locationLat.toFixed(4)},${locationLon.toFixed(4)}`,
       });
-      return sendFlightPrompt(phone);
+      return sendDropPrompt(phone, venueName);
     }
 
-    case 'ONBOARDING_FLIGHT': {
-      if (!text) return sendText(phone, 'Please type your flight number (e.g. 6E-204)');
-      const raw = msg.text?.body?.trim() || '';
-      await setState(phone, 'ONBOARDING_ARRIVAL', { flight_number: raw });
-      return sendArrivalPrompt(phone);
-    }
-
-    case 'ONBOARDING_ARRIVAL': {
-      const raw = msg.text?.body?.trim() || '';
-      if (!raw.match(/^\d{1,2}:\d{2}$/)) {
-        return sendText(phone, 'Please enter time in HH:MM format (e.g. 16:45)');
-      }
-      await setState(phone, 'ONBOARDING_DROP', { arrival_time: raw });
-      return sendDropPrompt(phone);
-    }
-
+    // ── Step 2: Drop location ──
     case 'ONBOARDING_DROP': {
-      if (!locationLat) return sendText(phone, 'Please share your drop-off location using the button above 📍');
+      if (!locationLat) {
+        return sendLocationRequest(phone, `Please share your *drop destination* using the button above 📍`);
+      }
       const updatedUser = await setState(phone, 'ONBOARDING_CONFIRM', {
         drop_lat: locationLat,
         drop_long: locationLon,
@@ -171,6 +143,7 @@ async function handleMessage(msg) {
       return sendConfirmation(phone, updatedUser);
     }
 
+    // ── Confirm ──
     case 'ONBOARDING_CONFIRM': {
       if (buttonId === 'CONFIRM_NO') return sendWelcome(phone);
       if (buttonId !== 'CONFIRM_YES') return sendText(phone, 'Please tap one of the buttons above.');
@@ -179,11 +152,12 @@ async function handleMessage(msg) {
         is_active: true,
         is_matched: false,
         payment_verified: false,
+        flight_number: null,
+        arrival_time: null,
       });
+
       const matches = await findMatches(activeUser);
       await sendMatchResults(activeUser, matches);
-
-      // Notify waiting users whose flight now has a new match
       await notifyWaitingUsers(activeUser, matches);
       return;
     }
@@ -198,25 +172,19 @@ async function handleMessage(msg) {
       if (listId.startsWith('match_')) {
         return handleMatchRequest(phone, listId.replace('match_', ''), user);
       }
-      return sendText(phone, 'You are in the waiting pool. Type MATCHES to view available matches, or STATUS to check your status.');
+      return sendText(phone, `You're in the matching pool! 🔍\n\nType *MATCHES* to view available matches or *STATUS* to check your status.`);
     }
 
     // ── MATCH_SENT ──
     case 'MATCH_SENT': {
       if (text === 'CANCEL') return handleCancelSentRequest(phone, user);
-      return sendText(phone, 'Your request is pending. The other passenger will respond shortly.\n\nType CANCEL to withdraw your request.');
+      return sendText(phone, `Your request is pending. They'll respond shortly.\n\nType *CANCEL* to withdraw.`);
     }
 
     // ── MATCH_RECEIVED ──
     case 'MATCH_RECEIVED': {
-      if (buttonId.startsWith('ACCEPT_')) {
-        const fromUserId = buttonId.replace('ACCEPT_', '');
-        return handleAcceptMatch(phone, fromUserId, user);
-      }
-      if (buttonId.startsWith('DECLINE_')) {
-        const fromUserId = buttonId.replace('DECLINE_', '');
-        return handleDeclineMatch(phone, fromUserId, user);
-      }
+      if (buttonId.startsWith('ACCEPT_')) return handleAcceptMatch(phone, buttonId.replace('ACCEPT_', ''), user);
+      if (buttonId.startsWith('DECLINE_')) return handleDeclineMatch(phone, buttonId.replace('DECLINE_', ''), user);
       return sendText(phone, 'Please tap Accept or Decline on the match request above.');
     }
 
@@ -224,10 +192,10 @@ async function handleMessage(msg) {
     case 'MATCHED': {
       if (text === 'CANCEL') return initiateCancelAfterMatch(phone, user);
       if (text === 'CONFIRM CANCEL') return handleCancelAfterMatch(phone, user);
-      if (text === 'BACK') return sendText(phone, 'Great! Your match is still active. Safe travels! ✈️');
+      if (text === 'BACK') return sendText(phone, `Great! Your match is still active. Safe travels! ✈️`);
       if (text === 'DONE') return handleTripDone(phone, user);
       if (text === 'ISSUE') return handleIssue(phone, user);
-      return sendText(phone, 'You are matched! Type DONE when your cab split is complete, or ISSUE to report a problem.');
+      return sendText(phone, `You're matched! 🎉\n\nType *DONE* when your cab split is complete, or *ISSUE* to report a problem.`);
     }
 
     default:
@@ -240,102 +208,79 @@ async function handleMessage(msg) {
 async function handleMatchRequest(fromPhone, toUserId, fromUser) {
   const { data: toUser } = await supabase.from('users').select('*').eq('user_id', toUserId).single();
   if (!toUser || !toUser.is_active || toUser.is_matched) {
-    return sendText(fromPhone, 'That match is no longer available. Type MATCHES to see current options.');
+    return sendText(fromPhone, `That match is no longer available. Type *MATCHES* to see current options.`);
   }
 
-  const { getDistanceKm } = require('../utils/haversine');
   const dist = getDistanceKm(fromUser.drop_lat, fromUser.drop_long, toUser.drop_lat, toUser.drop_long);
 
-  // Create match request record
   const { data: req } = await supabase
     .from('match_requests')
-    .insert({
-      from_user: fromUser.user_id,
-      to_user: toUser.user_id,
-      distance_km: dist,
-      status: 'pending',
-    })
-    .select()
-    .single();
+    .insert({ from_user: fromUser.user_id, to_user: toUser.user_id, distance_km: dist, status: 'pending' })
+    .select().single();
 
   await setState(fromPhone, 'MATCH_SENT', { pending_request_id: req.request_id });
   await setState(toUser.phone, 'MATCH_RECEIVED', { pending_request_id: req.request_id });
 
-  await sendText(fromPhone, `Request sent! ✅\n\nWaiting for them to respond. I'll notify you right away.\n\nType CANCEL to withdraw.`);
+  await sendText(fromPhone, `Request sent! ✅\n\nWaiting for them to respond. I'll notify you right away.\n\nType *CANCEL* to withdraw.`);
   await sendMatchRequest(fromUser, toUser, dist);
 
-  // Auto-expire in 10 minutes
   setTimeout(() => expireRequest(req.request_id, fromUser, toUser), 10 * 60 * 1000);
 }
 
 async function handleAcceptMatch(toPhone, fromUserId, toUser) {
   const { data: fromUser } = await supabase.from('users').select('*').eq('user_id', fromUserId).single();
-  if (!fromUser) return sendText(toPhone, 'Something went wrong. Type STATUS to check.');
+  if (!fromUser) return sendText(toPhone, `Something went wrong. Type STATUS to check.`);
 
   const { data: req } = await supabase
-    .from('match_requests')
-    .select('*')
-    .eq('from_user', fromUserId)
-    .eq('to_user', toUser.user_id)
-    .eq('status', 'pending')
-    .single();
+    .from('match_requests').select('*')
+    .eq('from_user', fromUserId).eq('to_user', toUser.user_id).eq('status', 'pending').single();
 
-  if (!req) return sendText(toPhone, 'This request has already expired or been cancelled.');
+  if (!req) return sendText(toPhone, `This request has already expired or been cancelled.`);
 
-  // Update statuses
   await supabase.from('match_requests').update({ status: 'accepted', responded_at: new Date().toISOString() }).eq('request_id', req.request_id);
   await setState(fromUser.phone, 'MATCHED', { is_matched: true, matched_with: toUser.user_id });
   await setState(toPhone, 'MATCHED', { is_matched: true, matched_with: fromUser.user_id });
 
   await supabase.from('confirmed_matches').insert({
-    user_a: fromUser.user_id,
-    user_b: toUser.user_id,
-    flight_number: fromUser.flight_number,
-    distance_km: req.distance_km,
-    confirmed_at: new Date().toISOString(),
+    user_a: fromUser.user_id, user_b: toUser.user_id,
+    distance_km: req.distance_km, confirmed_at: new Date().toISOString(),
   });
 
-  await sendText(toPhone, `You accepted! 🎉 Great choice.\n\nI'll send you both each other's contact details once payment is verified.`);
+  await sendText(toPhone, `You accepted! 🎉\n\nContact details will be shared once payment is verified.`);
 
-  // Send payment link to the requester (User A)
-  const matchId = req.request_id;
-  const payUrl = await createVerificationPaymentLink(fromUser, matchId);
+  const payUrl = await createVerificationPaymentLink(fromUser, req.request_id);
   await sendCTAButton(
     fromUser.phone,
     `Your match accepted! 🎉\n\nPay ₹1 to verify your identity and unlock each other's WhatsApp numbers.\n\n(This activates your free 3-month AasPass membership.)`,
-    'Pay ₹1 Now',
-    payUrl
+    'Pay ₹1 Now', payUrl
   );
 }
 
 async function handleDeclineMatch(toPhone, fromUserId, toUser) {
   const { data: fromUser } = await supabase.from('users').select('*').eq('user_id', fromUserId).single();
 
-  await supabase
-    .from('match_requests')
+  await supabase.from('match_requests')
     .update({ status: 'declined', responded_at: new Date().toISOString() })
-    .eq('from_user', fromUserId)
-    .eq('to_user', toUser.user_id)
-    .eq('status', 'pending');
+    .eq('from_user', fromUserId).eq('to_user', toUser.user_id).eq('status', 'pending');
 
   await setState(toPhone, 'WAITING');
   await setState(fromUser.phone, 'WAITING', { is_matched: false });
 
   await sendText(toPhone, `No problem! You're back in the pool. ✌️`);
   const matches = await findMatches(fromUser);
-  await sendText(fromUser.phone, `They declined. No worries — let me show you the next best option.`);
+  await sendText(fromUser.phone, `They declined. Let me show you the next best option.`);
   await sendMatchResults(fromUser, matches);
 }
 
 async function expireRequest(requestId, fromUser, toUser) {
   const { data: req } = await supabase.from('match_requests').select('status').eq('request_id', requestId).single();
-  if (!req || req.status !== 'pending') return; // already handled
+  if (!req || req.status !== 'pending') return;
 
   await supabase.from('match_requests').update({ status: 'expired' }).eq('request_id', requestId);
   await setState(fromUser.phone, 'WAITING');
   await setState(toUser.phone, 'WAITING');
 
-  await sendText(fromUser.phone, `Your request timed out after 10 minutes. Showing you the next match...`);
+  await sendText(fromUser.phone, `Your request timed out after 10 minutes. Showing next match...`);
   await sendText(toUser.phone, `A match request expired. You're back in the pool!`);
 
   const matches = await findMatches(fromUser);
@@ -345,34 +290,26 @@ async function expireRequest(requestId, fromUser, toUser) {
 // ── Cancel flows ──────────────────────────────────────────────────────────────
 
 async function handleCancelSentRequest(phone, user) {
-  if (!user.pending_request_id) {
-    await setState(phone, 'WAITING');
-    return sendText(phone, `No active request found. You're back in the pool.`);
-  }
-
-  const { data: req } = await supabase.from('match_requests').select('*').eq('request_id', user.pending_request_id).single();
-  if (req) {
-    await supabase.from('match_requests').update({ status: 'cancelled_by_sender', cancelled_by: user.user_id, cancelled_at: new Date().toISOString() }).eq('request_id', req.request_id);
-    const { data: toUser } = await supabase.from('users').select('*').eq('user_id', req.to_user).single();
-    if (toUser) {
-      await setState(toUser.phone, 'WAITING');
-      await sendText(toUser.phone, `The cab split request was withdrawn. You're back in the pool!`);
+  if (user.pending_request_id) {
+    const { data: req } = await supabase.from('match_requests').select('*').eq('request_id', user.pending_request_id).single();
+    if (req) {
+      await supabase.from('match_requests').update({ status: 'cancelled_by_sender', cancelled_by: user.user_id, cancelled_at: new Date().toISOString() }).eq('request_id', req.request_id);
+      const { data: toUser } = await supabase.from('users').select('*').eq('user_id', req.to_user).single();
+      if (toUser) {
+        await setState(toUser.phone, 'WAITING');
+        await sendText(toUser.phone, `The cab split request was withdrawn. You're back in the pool!`);
+      }
     }
   }
-
   await setState(phone, 'WAITING');
-  return sendText(phone, `Request cancelled. You're back in the matching pool. Type MATCHES to view options.`);
+  return sendText(phone, `Request cancelled. You're back in the pool. Type *MATCHES* to view options.`);
 }
 
-async function initiateCancelAfterMatch(phone, user) {
-  await sendButtons(
-    phone,
-    `Are you sure you want to cancel this match? The other person will be notified.`,
-    [
-      { id: 'CONFIRM_CANCEL', title: '✅ Confirm Cancel' },
-      { id: 'BACK_TO_MATCH',  title: '⬅️ Keep Match' },
-    ]
-  );
+async function initiateCancelAfterMatch(phone) {
+  return sendButtons(phone, `Are you sure you want to cancel this match? The other person will be notified.`, [
+    { id: 'CONFIRM_CANCEL', title: '✅ Confirm Cancel' },
+    { id: 'BACK_TO_MATCH',  title: '⬅️ Keep Match' },
+  ]);
 }
 
 async function handleCancelAfterMatch(phone, user) {
@@ -381,12 +318,12 @@ async function handleCancelAfterMatch(phone, user) {
   await setState(phone, 'WAITING', { is_matched: false, matched_with: null });
   if (matchedUser) {
     await setState(matchedUser.phone, 'WAITING', { is_matched: false, matched_with: null });
-    await sendText(matchedUser.phone, `Your cab split partner cancelled. You're back in the pool — I'll find you another match!`);
+    await sendText(matchedUser.phone, `Your cab split partner cancelled. You're back in the pool!`);
     const matches = await findMatches(matchedUser);
     await sendMatchResults(matchedUser, matches);
   }
 
-  await sendText(phone, `Match cancelled. You're back in the pool. Type MATCHES to search again.`);
+  return sendText(phone, `Match cancelled. You're back in the pool. Type *MATCHES* to search again.`);
 }
 
 // ── Trip completion ───────────────────────────────────────────────────────────
@@ -403,26 +340,19 @@ async function handleTripDone(phone, user) {
 
 async function handleIssue(phone, user) {
   await supabase.from('support_queue').insert({
-    user_id: user.user_id,
-    issue_type: 'trip_issue',
-    description: 'User reported an issue via ISSUE command',
-    created_at: new Date().toISOString(),
-    resolved: false,
+    user_id: user.user_id, issue_type: 'trip_issue',
+    description: 'User reported issue via ISSUE command',
+    created_at: new Date().toISOString(), resolved: false,
   });
-
-  return sendText(phone, `Sorry to hear that! 😟\n\nWe've logged your issue and our team will look into it.\n\nFor urgent help, please contact support directly.`);
+  return sendText(phone, `Sorry to hear that! 😟\n\nWe've logged your issue and our team will look into it shortly.`);
 }
 
-// ── Notify waiting users when a new user joins ────────────────────────────────
+// ── Notify waiting users ──────────────────────────────────────────────────────
 
 async function notifyWaitingUsers(newUser, matchesForNewUser) {
-  // For each match found, also check if that waiting user should be notified
   for (const match of matchesForNewUser.slice(0, 3)) {
     if (match.state === 'WAITING') {
-      const freshMatches = await findMatches(match);
-      if (freshMatches.length > 0) {
-        await sendText(match.phone, `Good news! A new match just appeared for your flight. Type MATCHES to view. 🚕`);
-      }
+      await sendText(match.phone, `Good news! A new match just appeared near you. Type *MATCHES* to view. 🚕`);
     }
   }
 }
@@ -430,9 +360,9 @@ async function notifyWaitingUsers(newUser, matchesForNewUser) {
 // ── Utility commands ──────────────────────────────────────────────────────────
 
 async function sendHelp(phone) {
-  const help =
+  return sendText(phone,
     `*AasPass Commands* ✈️\n\n` +
-    `*hi / start* — Begin onboarding\n` +
+    `*hi / start* — Begin matching\n` +
     `*MATCHES* — View available matches\n` +
     `*CANCEL* — Cancel your request or match\n` +
     `*DONE* — Confirm trip completed\n` +
@@ -440,21 +370,21 @@ async function sendHelp(phone) {
     `*STATUS* — Check your current status\n` +
     `*RESTART* — Start fresh\n` +
     `*STOP* — Unsubscribe\n` +
-    `*HELP* — Show this list`;
-  return sendText(phone, help);
+    `*HELP* — Show this list`
+  );
 }
 
 async function sendStatus(phone) {
   const user = await getUser(phone);
   if (!user) return sendText(phone, `No active session. Send "hi" to get started!`);
-  const msg =
+  return sendText(phone,
     `*Your Status*\n\n` +
     `State: ${user.state}\n` +
-    `Flight: ${user.flight_number || 'Not set'}\n` +
-    `Arrival: ${user.arrival_time || 'Not set'}\n` +
+    `Pickup: ${user.departure_airport || 'Not set'}\n` +
+    `Drop: ${user.drop_zone || 'Not set'}\n` +
     `Active: ${user.is_active ? 'Yes' : 'No'}\n` +
-    `Matched: ${user.is_matched ? 'Yes' : 'No'}`;
-  return sendText(phone, msg);
+    `Matched: ${user.is_matched ? 'Yes' : 'No'}`
+  );
 }
 
 module.exports = { handleMessage };
