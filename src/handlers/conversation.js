@@ -4,6 +4,7 @@ const { getDistanceKm } = require('../utils/haversine');
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode } = require('../services/geocoding');
 const { parseLocationFromText, isValidCoord } = require('../utils/locationParser');
+const { detectIntent } = require('../services/llm');
 
 // Search window: 10 min initial, 5 min extension
 const SEARCH_WINDOW_MS  = 10 * 60 * 1000;
@@ -555,8 +556,17 @@ async function handleMessage(msg, waName) {
       return sendText(phone, `We've logged your report: *${category}*.\n\nOur team will review it shortly. Thank you for keeping AasPass safe. 🙏`);
     }
 
-    default:
+    default: {
+      // ── LLM fallback: interpret ambiguous text messages ─────────────────────
+      // Only fires for text input that didn't match any button/list/command above.
+      // Buttons, locations, list taps are already handled — they never reach here.
+      if (msgType === 'text' && rawText.length > 0) {
+        const intent = await detectIntent(rawText, state);
+        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
+        return handleLLMIntent(intent, phone, user, waName, state);
+      }
       return startOrResume(phone, user, waName, false);
+    }
   }
 }
 
@@ -998,6 +1008,89 @@ async function sendStatus(phone) {
     `✅ Active: ${user.is_active ? 'Yes' : 'No'}\n` +
     `💑 Matched: ${user.is_matched ? 'Yes' : 'No'}`
   );
+}
+
+// ── LLM intent dispatcher ─────────────────────────────────────────────────────
+// Called from the default case when raw text doesn't match any known command.
+// Maps LLM action strings → existing handler functions.
+
+async function handleLLMIntent(intent, phone, user, waName, state) {
+  const { action, followup } = intent;
+
+  switch (action) {
+
+    case 'MATCHES': {
+      const freshUser = await getUser(phone);
+      const matches   = await findMatches(freshUser);
+      return sendMatchResults(freshUser, matches);
+    }
+
+    case 'CANCEL': {
+      if (state === 'MATCHED')     return initiateCancelAfterMatch(phone, user);
+      if (state === 'MATCH_SENT')  return handleCancelSentRequest(phone, user);
+      return handleCancelInWaiting(phone, user);
+    }
+
+    case 'EDIT_PICKUP': {
+      // Cancel any pending outbound requests before switching to edit mode
+      await cancelPendingRequestsFrom(user);
+      await setState(phone, 'POOL_EDIT_PICKUP');
+      return sendText(phone,
+        `Share your new *pickup location* 📍\n\n` +
+        `• Tap 📎 → Location → search or use current location\n` +
+        `• Or paste a Google Maps / Apple Maps link\n` +
+        `• Or type coordinates: *17.2403, 78.4294*`
+      );
+    }
+
+    case 'EDIT_DROP': {
+      await cancelPendingRequestsFrom(user);
+      await setState(phone, 'POOL_EDIT_DROP');
+      return sendText(phone,
+        `Share your new *drop destination* 📍\n\n` +
+        `• Tap 📎 → Location → search any city\n` +
+        `• Or paste a Google Maps / Apple Maps link\n` +
+        `• Or type coordinates: *28.6139, 77.2090*`
+      );
+    }
+
+    case 'STATUS':  return sendStatus(phone);
+    case 'HELP':    return sendHelp(phone);
+
+    case 'START':   return startOrResume(phone, user, waName, false);
+    case 'RESTART': return startOrResume(phone, user, waName, true);
+
+    case 'TRIP_DONE':    return handleTripDone(phone, user);
+    case 'REPORT_ISSUE': return sendIssueMenu(phone);
+
+    case 'EXTEND_YES': {
+      const extended = await setState(phone, 'WAITING', {
+        is_active:  true,
+        expires_at: new Date(Date.now() + RETRY_WINDOW_MS).toISOString(),
+      });
+      const matches = await findMatches(extended);
+      if (matches.length) return sendMatchResults(extended, matches);
+      return sendText(phone, `Still looking! ⏳ I'll alert you the moment a match appears nearby.`);
+    }
+
+    case 'EXTEND_NO': {
+      await setState(phone, 'IDLE', { is_active: false });
+      return sendText(phone, `No problem! Send *hi* whenever you're ready to search again. ✈️`);
+    }
+
+    // ACCEPT / DECLINE require a specific user ID — can't resolve from plain text alone.
+    // Prompt them to use the button in the original request message.
+    case 'ACCEPT':
+    case 'DECLINE':
+      return sendText(phone, `Please use the *Accept* / *Decline* buttons in the request message above.`);
+
+    default: {
+      // LLM returned UNKNOWN (off-topic, greeting, etc.) or unrecognised action.
+      // If the model supplied a followup hint, send it; otherwise generic nudge.
+      if (followup) return sendText(phone, followup);
+      return sendText(phone, `Not sure what you mean. Type *HELP* to see available commands.`);
+    }
+  }
 }
 
 module.exports = { handleMessage };
