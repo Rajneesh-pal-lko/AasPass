@@ -35,7 +35,8 @@ function genderLabel(g) {
   if (g === 'M')  return 'Male';
   if (g === 'F')  return 'Female';
   if (g === 'NB') return 'Non-binary';
-  return g || 'Not set';
+  if (g === 'NS') return 'Not disclosed';
+  return 'Not set';
 }
 
 function prefLabel(p) {
@@ -68,14 +69,19 @@ async function sendNamePrompt(phone, waName) {
 }
 
 async function sendGenderPrompt(phone) {
-  await sendButtons(
+  await sendList(
     phone,
-    `Nice to meet you! 👋\n\nWhat's your gender? This helps us show you compatible matches.`,
-    [
-      { id: 'GENDER_M',  title: '👨 Male'       },
-      { id: 'GENDER_F',  title: '👩 Female'     },
-      { id: 'GENDER_NB', title: '🏳️ Non-binary' },
-    ]
+    `Nice to meet you! 👋\n\nWhat's your gender? This helps us show compatible matches.`,
+    'Select Gender',
+    [{
+      title: 'Gender',
+      rows: [
+        { id: 'GENDER_M',  title: '👨 Male',               description: '' },
+        { id: 'GENDER_F',  title: '👩 Female',             description: '' },
+        { id: 'GENDER_NB', title: '🏳️ Non-binary',        description: '' },
+        { id: 'GENDER_NS', title: '🤐 Prefer not to say',  description: 'Will match with anyone' },
+      ],
+    }]
   );
   await setState(phone, 'ONBOARDING_GENDER');
 }
@@ -228,9 +234,8 @@ async function handleMessage(msg, waName) {
 
     // ── ONBOARDING: GENDER ────────────────────────────────────────────────────
     case 'ONBOARDING_GENDER': {
-      const genderMap = { GENDER_M: 'M', GENDER_F: 'F', GENDER_NB: 'NB' };
-      const gender = genderMap[buttonId];
-      if (!gender) return sendGenderPrompt(phone);
+      const genderMap = { GENDER_M: 'M', GENDER_F: 'F', GENDER_NB: 'NB', GENDER_NS: 'NS' };
+      const gender = genderMap[listId] || 'NS'; // default to NS if somehow skipped
       await setState(phone, 'ONBOARDING_PREFERRED_GENDER', { gender });
       return sendPreferredGenderPrompt(phone);
     }
@@ -238,8 +243,7 @@ async function handleMessage(msg, waName) {
     // ── ONBOARDING: PREFERRED GENDER ─────────────────────────────────────────
     case 'ONBOARDING_PREFERRED_GENDER': {
       const prefMap = { PREF_ANY: 'ANY', PREF_M: 'M', PREF_F: 'F' };
-      const preferred_gender = prefMap[buttonId];
-      if (!preferred_gender) return sendPreferredGenderPrompt(phone);
+      const preferred_gender = prefMap[buttonId] || 'ANY'; // default to ANY if skipped
       await setState(phone, 'ONBOARDING_PICKUP', { preferred_gender });
       return sendPickupPrompt(phone, false);
     }
@@ -327,8 +331,8 @@ async function handleMessage(msg, waName) {
 
     // ── EDITING: GENDER ───────────────────────────────────────────────────────
     case 'EDITING_GENDER': {
-      const genderMap = { GENDER_M: 'M', GENDER_F: 'F', GENDER_NB: 'NB' };
-      const gender = genderMap[buttonId];
+      const genderMap = { GENDER_M: 'M', GENDER_F: 'F', GENDER_NB: 'NB', GENDER_NS: 'NS' };
+      const gender = genderMap[listId];
       if (!gender) return sendGenderPrompt(phone);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', { gender });
       return sendConfirmation(phone, updated);
@@ -363,6 +367,32 @@ async function handleMessage(msg, waName) {
       return sendConfirmation(phone, updated);
     }
 
+    // ── POOL EDIT: PICKUP (while in WAITING pool) ─────────────────────────────
+    case 'POOL_EDIT_PICKUP': {
+      if (!locationLat) return sendLocationRequest(phone, `Share your new *pickup location* 📍`);
+      const pickup_label = await reverseGeocode(locationLat, locationLon);
+      const updatedUser = await setState(phone, 'WAITING', {
+        departure_lat: locationLat, departure_long: locationLon, pickup_label,
+        search_started_at: new Date().toISOString(),
+      });
+      await sendText(phone, `✅ Pickup updated to: *${pickup_label}*\n\nSearching for new matches...`);
+      const matchesP = await findMatches(updatedUser);
+      return sendMatchResults(updatedUser, matchesP);
+    }
+
+    // ── POOL EDIT: DROP (while in WAITING pool) ───────────────────────────────
+    case 'POOL_EDIT_DROP': {
+      if (!locationLat) return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
+      const drop_label = await reverseGeocode(locationLat, locationLon);
+      const updatedUser = await setState(phone, 'WAITING', {
+        drop_lat: locationLat, drop_long: locationLon, drop_label, drop_zone: drop_label,
+        search_started_at: new Date().toISOString(),
+      });
+      await sendText(phone, `✅ Drop updated to: *${drop_label}*\n\nSearching for new matches...`);
+      const matchesD = await findMatches(updatedUser);
+      return sendMatchResults(updatedUser, matchesD);
+    }
+
     // ── WAITING ───────────────────────────────────────────────────────────────
     case 'WAITING': {
       if (text === 'MATCHES') {
@@ -370,10 +400,25 @@ async function handleMessage(msg, waName) {
         const matches   = await findMatches(freshUser);
         return sendMatchResults(freshUser, matches);
       }
+      if (text === 'CANCEL') return handleCancelInWaiting(phone, user);
+      if (text === 'EDIT')   return sendPoolEditMenu(phone);
+
+      // Edit buttons from pool edit menu
+      if (buttonId === 'POOL_EDIT_PICKUP') {
+        await cancelPendingRequestsFrom(user);
+        await setState(phone, 'POOL_EDIT_PICKUP');
+        return sendLocationRequest(phone, `Share your new *pickup location* 📍`);
+      }
+      if (buttonId === 'POOL_EDIT_DROP') {
+        await cancelPendingRequestsFrom(user);
+        await setState(phone, 'POOL_EDIT_DROP');
+        return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
+      }
+
       if (listId.startsWith('match_')) {
         return handleMatchRequest(phone, listId.replace('match_', ''), user);
       }
-      return sendText(phone, `You're in the matching pool! 🔍\n\nType *MATCHES* to view available matches, or wait — I'll notify you the moment someone joins.`);
+      return sendText(phone, `You're in the matching pool! 🔍\n\nType *MATCHES* to view matches, *EDIT* to update your pickup/drop, or *CANCEL* to withdraw.`);
     }
 
     // ── WAITING_RETRY (shown "extend?" question) ──────────────────────────────
@@ -397,7 +442,18 @@ async function handleMessage(msg, waName) {
     // ── MATCH_SENT ────────────────────────────────────────────────────────────
     case 'MATCH_SENT': {
       if (text === 'CANCEL') return handleCancelSentRequest(phone, user);
-      return sendText(phone, `Your request is pending. They'll respond shortly.\n\nType *CANCEL* to withdraw.`);
+      if (text === 'EDIT')   return sendPoolEditMenu(phone);
+      if (buttonId === 'POOL_EDIT_PICKUP') {
+        await handleCancelSentRequest(phone, user);
+        await setState(phone, 'POOL_EDIT_PICKUP');
+        return sendLocationRequest(phone, `Share your new *pickup location* 📍`);
+      }
+      if (buttonId === 'POOL_EDIT_DROP') {
+        await handleCancelSentRequest(phone, user);
+        await setState(phone, 'POOL_EDIT_DROP');
+        return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
+      }
+      return sendText(phone, `Your request is pending. They'll respond shortly.\n\nType *CANCEL* to withdraw, or *EDIT* to update your trip details.`);
     }
 
     // ── MATCH_RECEIVED ────────────────────────────────────────────────────────
@@ -498,9 +554,66 @@ async function syncProfileFields(phone, user) {
   }
 }
 
+// ── Pool edit helpers ─────────────────────────────────────────────────────────
+
+async function sendPoolEditMenu(phone) {
+  await sendButtons(
+    phone,
+    `What would you like to update?`,
+    [
+      { id: 'POOL_EDIT_PICKUP', title: '📍 Pickup location'  },
+      { id: 'POOL_EDIT_DROP',   title: '🎯 Drop destination' },
+    ]
+  );
+}
+
+// Cancel all pending sent requests and notify receivers
+async function cancelPendingRequestsFrom(user) {
+  const { data: reqs } = await supabase
+    .from('match_requests')
+    .select('*')
+    .eq('from_user', user.user_id)
+    .eq('status', 'pending');
+
+  if (!reqs?.length) return;
+
+  for (const req of reqs) {
+    await supabase.from('match_requests')
+      .update({ status: 'cancelled_by_sender', cancelled_by: user.user_id, cancelled_at: new Date().toISOString() })
+      .eq('request_id', req.request_id);
+
+    // Notify the person who received the now-invalid request
+    const { data: toUser } = await supabase.from('users').select('*').eq('user_id', req.to_user).single();
+    if (toUser && toUser.state === 'MATCH_RECEIVED') {
+      await setState(toUser.phone, 'WAITING', { pending_request_id: null });
+      await sendText(toUser.phone,
+        `The match request you received is no longer available — the sender updated their trip. You're back in the pool! 🔄`
+      ).catch(() => {});
+    }
+  }
+}
+
+async function handleCancelInWaiting(phone, user) {
+  await cancelPendingRequestsFrom(user);
+  await setState(phone, 'IDLE', { is_active: false });
+  return sendText(phone, `You've left the matching pool. Send *hi* to search again anytime. 👋`);
+}
+
 // ── Match request flow ────────────────────────────────────────────────────────
 
 async function handleMatchRequest(fromPhone, toUserId, fromUser) {
+  // Block duplicate pending requests
+  const { data: existing } = await supabase
+    .from('match_requests')
+    .select('request_id')
+    .eq('from_user', fromUser.user_id)
+    .eq('status', 'pending')
+    .maybeSingle();
+
+  if (existing) {
+    return sendText(fromPhone, `You already have a pending request out.\n\nType *CANCEL* to withdraw it first, then pick a new match.`);
+  }
+
   const { data: toUser } = await supabase.from('users').select('*').eq('user_id', toUserId).single();
   if (!toUser || !toUser.is_active || toUser.is_matched) {
     return sendText(fromPhone, `That match is no longer available. Type *MATCHES* to see current options.`);

@@ -35,9 +35,13 @@ async function findMatches(user) {
   const ranked = candidates
     .filter(c => !blockedIds.has(c.user_id))
     .filter(c => {
-      // Gender preference filtering (both ways must agree)
-      const theyMatchMe = !c.preferred_gender || c.preferred_gender === 'ANY' || c.preferred_gender === user.gender;
-      const iMatchThem  = !user.preferred_gender || user.preferred_gender === 'ANY' || user.preferred_gender === c.gender;
+      // NS (not disclosed) users match with everyone regardless of preference
+      const myGender   = user.gender || 'NS';
+      const theirGender = c.gender   || 'NS';
+      const theyMatchMe = !c.preferred_gender || c.preferred_gender === 'ANY'
+        || c.preferred_gender === myGender || myGender === 'NS' || theirGender === 'NS';
+      const iMatchThem  = !user.preferred_gender || user.preferred_gender === 'ANY'
+        || user.preferred_gender === theirGender || myGender === 'NS' || theirGender === 'NS';
       return theyMatchMe && iMatchThem;
     })
     .map(c => {
@@ -46,7 +50,14 @@ async function findMatches(user) {
       return { ...c, dropDist, pickupDist };
     })
     .filter(c => c.dropDist <= DROP_RADIUS_KM && c.pickupDist <= PICKUP_RADIUS_KM)
-    .sort((a, b) => a.dropDist - b.dropDist);
+    .sort((a, b) => {
+      // Same gender shown first (NS matches both, so doesn't get priority boost)
+      const myGender = user.gender;
+      const aScore = (myGender && myGender !== 'NS' && a.gender === myGender) ? 0 : 1;
+      const bScore = (myGender && myGender !== 'NS' && b.gender === myGender) ? 0 : 1;
+      if (aScore !== bScore) return aScore - bScore;
+      return a.dropDist - b.dropDist; // then by distance
+    });
 
   return ranked;
 }
