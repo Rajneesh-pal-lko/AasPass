@@ -63,11 +63,15 @@ async function sendMatchResults(user, matches) {
     return;
   }
 
-  const rows = matches.slice(0, 10).map((m, i) => ({
-    id: `match_${m.user_id}`,
-    title: `${i === 0 ? '⭐ Best Match — ' : ''}${m.dropDist.toFixed(1)} km away`,
-    description: `📍 ${m.drop_label || m.drop_zone || 'Nearby destination'}  •  ${m.name || 'Anonymous'}`,
-  }));
+  const rows = matches.slice(0, 10).map((m, i) => {
+    const dist  = m.dropDist.toFixed(1);
+    const star  = i === 0 ? '⭐ ' : '';
+    const title = `${star}${dist}km away`.slice(0, 24);          // max 24 chars
+    const place = (m.drop_label || m.drop_zone || 'Nearby').slice(0, 40);
+    const name  = (m.name || 'Anonymous').slice(0, 15);
+    const description = `${name} • ${place}`.slice(0, 72);      // max 72 chars
+    return { id: `match_${m.user_id}`, title, description };
+  });
 
   await sendList(
     user.phone,

@@ -19,10 +19,10 @@ async function logMessage({ phone, direction, messageType, messageText, rawPaylo
       message_count: supabase.rpc ? undefined : undefined,
     }, { onConflict: 'phone', ignoreDuplicates: false });
 
-    // Increment message count separately
-    await supabase.rpc('increment_message_count', { user_phone: phone }).catch(() => {
-      // RPC may not exist yet — ignore silently
-    });
+    // Increment message count separately (RPC may not exist — ignore silently)
+    try {
+      await supabase.rpc('increment_message_count', { user_phone: phone });
+    } catch (_) {}
 
   } catch (err) {
     // Never crash the bot due to logging failure
