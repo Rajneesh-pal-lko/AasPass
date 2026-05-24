@@ -119,7 +119,13 @@ async function resolveOrSearch(phone, msgType, locationLat, locationLon, rawText
     || (msgType === 'text' && !rawText.startsWith('http') && rawText.length >= 3 ? rawText : null);
 
   if (geocodeQuery) {
-    const hits = await forwardGeocode(geocodeQuery, 5);
+    let hits = [];
+    try {
+      hits = await forwardGeocode(geocodeQuery, 5);
+    } catch (e) {
+      // Geocoding error (timeout, API issue) — treat as 0 results so caller re-prompts
+      console.error('resolveOrSearch geocoding error:', e.message);
+    }
     if (hits.length > 0) {
       const rows = hits.map(h => {
         // Title: first segment before comma, capped at 24 chars
@@ -406,11 +412,12 @@ async function handleMessage(msg, waName) {
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
         }
         return sendText(phone,
-          `Please share your *pickup location* 📍\n\n` +
-          `• Tap 📎 → Location → search or use current location\n` +
-          `• Or type a place name: *Mantri Celestia Hyderabad*\n` +
-          `• Or paste a Google Maps link\n` +
-          `• Or type coordinates: *17.2403, 78.4294*`
+          `Couldn't find that location 😕\n\n` +
+          `Share your *pickup location* using one of these:\n` +
+          `• 📍 Tap 📎 → Location → share pin (most reliable)\n` +
+          `• 🔤 Type a place name — check spelling!\n` +
+          `• 🔗 Paste a Google Maps link\n` +
+          `• 🌐 Type coordinates: *17.2403, 78.4294*`
         );
       }
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
@@ -431,11 +438,12 @@ async function handleMessage(msg, waName) {
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
         }
         return sendText(phone,
-          `Please share your *drop destination* 📍\n\n` +
-          `• Tap 📎 → Location → search any city\n` +
-          `• Or type a place name: *Connaught Place Delhi*\n` +
-          `• Or paste a Google Maps link\n` +
-          `• Or type coordinates: *28.6139, 77.2090*`
+          `Couldn't find that location 😕\n\n` +
+          `Share your *drop destination* using one of these:\n` +
+          `• 📍 Tap 📎 → Location → share pin (most reliable)\n` +
+          `• 🔤 Type a place name — check spelling!\n` +
+          `• 🔗 Paste a Google Maps link\n` +
+          `• 🌐 Type coordinates: *28.6139, 77.2090*`
         );
       }
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
