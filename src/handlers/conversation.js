@@ -1,5 +1,6 @@
 const supabase = require('../config/supabase');
-const { sendText, sendButtons, sendList, sendLocationRequest } = require('../services/whatsapp');
+const { sendText, sendButtons, sendList, sendLocationRequest, sendCTAButton } = require('../services/whatsapp');
+const { logError } = require('../utils/errorLogger');
 const { getDistanceKm } = require('../utils/haversine');
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
@@ -802,7 +803,10 @@ async function resetForNewSearch(phone, user) {
         await setState(partner.phone, 'WAITING', { is_matched: false, matched_with: null });
         await sendText(partner.phone, `Your cab-split partner started a new search. You're back in the pool! 🔄`).catch(() => {});
       }
-    } catch (e) { console.error('resetForNewSearch partner error:', e.message); }
+    } catch (e) {
+      console.error('resetForNewSearch partner error:', e.message);
+      logError({ severity: 'WARNING', type: 'MATCHING', operation: 'resetForNewSearch_partner', message: e.message, phone, error: e }).catch(() => {});
+    }
   }
 
   // If user received a request they haven't responded to, cancel it and notify sender
@@ -822,7 +826,10 @@ async function resetForNewSearch(phone, user) {
           await sendText(sender.phone, `The person you requested started a new search. You're back in the pool! 🔄`).catch(() => {});
         }
       }
-    } catch (e) { console.error('resetForNewSearch MATCH_RECEIVED error:', e.message); }
+    } catch (e) {
+      console.error('resetForNewSearch MATCH_RECEIVED error:', e.message);
+      logError({ severity: 'WARNING', type: 'MATCHING', operation: 'resetForNewSearch_received', message: e.message, phone, error: e }).catch(() => {});
+    }
   }
 
   // Clear the user's active session flags
@@ -864,6 +871,7 @@ async function syncProfileFields(phone, user) {
     }, { onConflict: 'phone' });
   } catch (e) {
     console.error('Profile sync error:', e.message);
+    logError({ severity: 'WARNING', type: 'SUPABASE', operation: 'syncProfileFields', message: e.message, phone, error: e }).catch(() => {});
   }
 }
 
@@ -994,14 +1002,13 @@ async function sendTrustSignals(phone, selfUser, partnerUser, req) {
   await sendButtons(
     phone,
     `🎉 *Match confirmed!*\n\n` +
-    `Your match:\n` +
+    `Your partner:\n` +
     `👤 *${partnerUser.name || 'Anonymous'}* (${genderLabel(partnerUser.gender)})\n` +
     `📍 Drop: ${partnerDrop}\n` +
     `${ratingStr}\n\n` +
-    `Tap *Share Contact* below to exchange WhatsApp numbers.`,
+    `Tap *Share Contact* — both of you must agree before numbers are exchanged.`,
     [
       { id: 'SHARE_CONTACT', title: '📱 Share Contact' },
-      { id: 'TRIP_DONE',     title: '✅ Done'          },
     ]
   );
 }
@@ -1031,26 +1038,43 @@ async function handleShareContact(phone, user) {
     const { data: partnerUser } = await supabase
       .from('users').select('*').eq('user_id', freshUser.matched_with).single();
     if (partnerUser) {
-      await revealContact(freshUser.phone, partnerUser);
-      await revealContact(partnerUser.phone, freshUser);
+      await revealContact(freshUser.phone, partnerUser, freshUser);
+      await revealContact(partnerUser.phone, freshUser, partnerUser);
     }
   } else {
     await sendText(phone, `✅ Your number is ready to share!\n\nWaiting for *${isA ? 'them' : 'them'}* to also tap Share Contact... I'll notify you the moment they do.`);
   }
 }
 
-async function revealContact(phone, partnerUser) {
-  const partnerPhone = partnerUser.phone.startsWith('+') ? partnerUser.phone : `+${partnerUser.phone}`;
+async function revealContact(phone, partnerUser, selfUser) {
+  const myDrop      = selfUser?.drop_label || selfUser?.drop_zone || 'my destination';
+  const prefilledMsg = encodeURIComponent(
+    `Hi ${partnerUser.name || 'there'}! I found you on AasPass 🚕 I'm heading to ${myDrop}. Let's share a cab — can we coordinate?`
+  );
+  const waLink = `https://wa.me/${partnerUser.phone}?text=${prefilledMsg}`;
+
   await sendButtons(
     phone,
-    `🎊 *Both of you agreed!* Numbers exchanged.\n\n` +
-    `*${partnerUser.name || 'Your match'}*: https://wa.me/${partnerUser.phone}\n\n` +
-    `Book a cab together and split the fare! 🚕\n\nTap *Done* once your trip is complete.`,
+    `🎊 *Contact exchanged!*\n\n` +
+    `👤 *${partnerUser.name || 'Your match'}*\n` +
+    `📍 Their drop: ${partnerUser.drop_label || partnerUser.drop_zone || 'Nearby'}\n\n` +
+    `Message them to coordinate your cab 🚕\n\nTap *Done* once your trip is complete.`,
     [
       { id: 'TRIP_DONE',  title: '✅ Done'    },
       { id: 'TRIP_ISSUE', title: '⚠️ Issue'   },
     ]
   );
+
+  // CTA button — opens WhatsApp chat with a pre-filled intro message ready to send
+  await sendCTAButton(
+    phone,
+    `💬 A message is ready for you to send:`,
+    '📱 Message on WhatsApp',
+    waLink
+  ).catch(e => logError({
+    severity: 'WARNING', type: 'WHATSAPP', operation: 'revealContact_cta',
+    message: e.message, phone, error: e,
+  }).catch(() => {}));
 }
 
 async function handleDeclineMatch(toPhone, fromUserId, toUser) {
@@ -1272,6 +1296,7 @@ async function notifyWaitingUsers(newUser, matchesForNewUser) {
       await sendMatchResults(fresh, theirMatches);
     } catch (e) {
       console.error(`notifyWaitingUsers error for ${match.phone}:`, e.message);
+      logError({ severity: 'WARNING', type: 'MATCHING', operation: 'notifyWaitingUsers', message: e.message, phone: match.phone, error: e }).catch(() => {});
     }
   }
 }

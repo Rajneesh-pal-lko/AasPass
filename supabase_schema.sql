@@ -151,6 +151,61 @@ begin
 end;
 $$;
 
+-- ── error_logs ────────────────────────────────────────────────────────────────
+-- Central error log table. Fire-and-forget inserts from errorLogger.js.
+-- Never blocks user-facing flows. Retained for 90 days then auto-purged.
+create table if not exists error_logs (
+  id              uuid        primary key default gen_random_uuid(),
+  severity        text        not null default 'ERROR'
+                              check (severity in ('INFO', 'WARNING', 'ERROR', 'CRITICAL')),
+  error_type      text        not null,
+  operation_name  text,
+  phone           text,
+  user_state      text,
+  message         text        not null,
+  stack           text,
+  context         jsonb,
+  wa_message_id   text,
+  request_id      text,
+  resolved        boolean     not null default false,
+  resolved_at     timestamptz,
+  created_at      timestamptz not null default now()
+);
+
+-- Unresolved errors sorted by time — main dashboard view
+create index if not exists idx_error_logs_unresolved
+  on error_logs (created_at desc)
+  where resolved = false;
+
+-- Filter by severity (for CRITICAL alerting later)
+create index if not exists idx_error_logs_severity
+  on error_logs (severity, created_at desc);
+
+-- All errors for a specific user
+create index if not exists idx_error_logs_phone
+  on error_logs (phone, created_at desc);
+
+-- Errors by category (e.g. "all geocoding failures today")
+create index if not exists idx_error_logs_type
+  on error_logs (error_type, created_at desc);
+
+-- ── RPC: cleanup_old_error_logs ───────────────────────────────────────────────
+-- Retention policy: purge error logs older than N days (default 90).
+-- Called by the daily cleanup cron in cleanup.js.
+create or replace function cleanup_old_error_logs(retention_days int default 90)
+returns int
+language plpgsql
+as $$
+declare
+  deleted_count int;
+begin
+  delete from error_logs
+  where created_at < now() - (retention_days || ' days')::interval;
+  get diagnostics deleted_count = row_count;
+  return deleted_count;
+end;
+$$;
+
 -- ── RPC: cleanup_stale_buffer_rows ───────────────────────────────────────────
 -- Crash recovery: delete PROCESSING rows older than max_age_seconds.
 -- Called by the 10-minute cron. A row stuck in PROCESSING means the worker

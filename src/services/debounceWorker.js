@@ -19,9 +19,10 @@
  *   BUFFERING row (user sent a message mid-processing) is never accidentally deleted.
  */
 
-const supabase      = require('../config/supabase');
+const supabase           = require('../config/supabase');
 const { processMessage } = require('./processor');
-const { sendText }  = require('./whatsapp');
+const { sendText }       = require('./whatsapp');
+const { logError }       = require('../utils/errorLogger');
 
 const POLL_INTERVAL_MS = 500;
 
@@ -39,11 +40,16 @@ async function flushReady() {
   let row;
   try {
     const { data, error } = await supabase.rpc('claim_ready_buffer_row');
-    if (error) { console.error('debounceWorker: claim RPC error:', error.message); return; }
+    if (error) {
+      console.error('debounceWorker: claim RPC error:', error.message);
+      logError({ severity: 'ERROR', type: 'DEBOUNCE_WORKER', operation: 'claim_ready_buffer_row', message: error.message, error }).catch(() => {});
+      return;
+    }
     if (!data?.length) return;
     row = data[0];
   } catch (e) {
     console.error('debounceWorker: claim threw:', e.message);
+    logError({ severity: 'ERROR', type: 'DEBOUNCE_WORKER', operation: 'claim_ready_buffer_row', message: e.message, error: e }).catch(() => {});
     return;
   }
 
@@ -65,6 +71,15 @@ async function flushReady() {
     // it crashed before acquiring the lock (e.g. dedup DB call failed).
     // Belt-and-suspenders: attempt to clear the lock and notify the user.
     console.error(`debounceWorker: processMessage threw for ${row.phone}:`, e.message);
+    logError({
+      severity:   'CRITICAL',
+      type:       'DEBOUNCE_WORKER',
+      operation:  'processMessage',
+      message:    e.message,
+      phone:      row.phone,
+      waMessageId: syntheticMsg.id,
+      error:      e,
+    }).catch(() => {});
 
     try {
       await supabase
@@ -89,6 +104,7 @@ async function flushReady() {
         .eq('status', 'PROCESSING');
     } catch (e) {
       console.error('debounceWorker: delete buffer error:', e.message);
+      logError({ severity: 'WARNING', type: 'DEBOUNCE_WORKER', operation: 'delete_buffer_row', message: e.message, phone: row?.phone, error: e }).catch(() => {});
     }
   }
 }

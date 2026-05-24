@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const supabase = require('../config/supabase');
 const { sendText, sendButtons } = require('./whatsapp');
+const { logError } = require('../utils/errorLogger');
 
 // All timing is driven by the expires_at column set on the user row.
 // No more time arithmetic in code — just compare expires_at < NOW().
@@ -22,7 +23,12 @@ function startCleanupJob() {
     await cleanupStaleBufferRows();
   });
 
-  console.log('Cleanup cron started (every 2 min + every 10 min) 🧹');
+  // Runs daily at 3 AM — purge error logs older than 90 days
+  cron.schedule('0 3 * * *', async () => {
+    await cleanupOldErrorLogs();
+  });
+
+  console.log('Cleanup cron started (every 2 min + every 10 min + daily 3am) 🧹');
 }
 
 // ── 1. WAITING users whose expires_at passed → ask to extend ─────────────────
@@ -58,6 +64,7 @@ async function promoteToRetry(now) {
       );
     } catch (e) {
       console.error(`Retry prompt error for ${user.phone}:`, e.message);
+      logError({ severity: 'ERROR', type: 'CLEANUP', operation: 'promoteToRetry', message: e.message, phone: user.phone, userState: user.state, error: e }).catch(() => {});
     }
   }
 
@@ -91,6 +98,7 @@ async function expireRetryUsers(now) {
       );
     } catch (e) {
       console.error(`Expire retry error for ${user.phone}:`, e.message);
+      logError({ severity: 'ERROR', type: 'CLEANUP', operation: 'expireRetryUsers', message: e.message, phone: user.phone, userState: user.state, error: e }).catch(() => {});
     }
   }
 
@@ -126,6 +134,7 @@ async function safetyExpire(now) {
       ).catch(() => {});
     } catch (e) {
       console.error(`Safety expire error for ${user.phone}:`, e.message);
+      logError({ severity: 'ERROR', type: 'CLEANUP', operation: 'safetyExpire', message: e.message, phone: user.phone, userState: user.state, error: e }).catch(() => {});
     }
   }
 
@@ -164,6 +173,18 @@ async function expirePendingMessages() {
 async function cleanupStaleBufferRows() {
   const { data, error } = await supabase.rpc('cleanup_stale_buffer_rows', { max_age_seconds: 60 });
   if (!error && data > 0) console.log(`Cleanup: cleared ${data} stale buffer row(s)`);
+}
+
+// ── Retention: purge error_logs older than 90 days ────────────────────────────
+
+async function cleanupOldErrorLogs() {
+  try {
+    const { data, error } = await supabase.rpc('cleanup_old_error_logs', { retention_days: 90 });
+    if (error) throw error;
+    if (data > 0) console.log(`Cleanup: purged ${data} error log(s) older than 90 days`);
+  } catch (e) {
+    console.error('Cleanup: cleanupOldErrorLogs error:', e.message);
+  }
 }
 
 module.exports = { startCleanupJob };
