@@ -69,7 +69,7 @@ async function sendMatchResults(user, matches) {
   if (matches.length === 0) {
     await sendText(
       user.phone,
-      `You're the first one here! 🥇\n\nI've saved your spot and will notify you the moment someone nearby joins.\n\n⏰ Your spot is held for *10 minutes* and can be extended once.`
+      `No partners found yet 🕐\n\nYou're saved in the pool — I'll ping you the moment someone nearby joins.\n\nType *CANCEL* to leave or *EDIT* to update your trip.`
     );
     return;
   }
@@ -77,18 +77,18 @@ async function sendMatchResults(user, matches) {
   const rows = matches.slice(0, 10).map((m, i) => {
     const dist  = m.dropDist.toFixed(1);
     const star  = i === 0 ? '⭐ ' : '';
-    const title = `${star}${dist}km away`.slice(0, 24);          // max 24 chars
+    const title = `${star}${dist} km away`.slice(0, 24);
     const place = (m.drop_label || m.drop_zone || 'Nearby').slice(0, 40);
     const name  = (m.name || 'Anonymous').slice(0, 15);
-    const description = `${name} • ${place}`.slice(0, 72);      // max 72 chars
+    const description = `${name} • ${place}`.slice(0, 72);
     return { id: `match_${m.user_id}`, title, description };
   });
 
   await sendList(
     user.phone,
-    `🎉 Found *${matches.length}* match${matches.length > 1 ? 'es' : ''} near you!\n\nSelect someone to send a cab-split request:`,
+    `🎉 *${matches.length} partner${matches.length > 1 ? 's' : ''} found nearby!*\n\nTap a name to send them a cab-split request:`,
     'View Matches',
-    [{ title: 'Nearby Matches', rows }]
+    [{ title: 'Nearby Partners', rows }]
   );
 }
 
@@ -96,12 +96,13 @@ async function sendMatchResults(user, matches) {
  * Notify User B that User A wants to split.
  */
 async function sendMatchRequest(fromUser, toUser, distanceKm) {
-  const genderLabel = fromUser.gender === 'M' ? 'Male' : fromUser.gender === 'F' ? 'Female' : 'Non-binary';
+  const gLabel = fromUser.gender === 'M' ? 'Male' : fromUser.gender === 'F' ? 'Female' : fromUser.gender === 'NB' ? 'Non-binary' : '';
+  const genderPart = gLabel ? ` (${gLabel})` : '';
   await sendButtons(
     toUser.phone,
-    `Someone nearby wants to split a cab! 🚕\n\n*${fromUser.name || 'Someone'}* (${genderLabel}) wants to share to a drop *${distanceKm.toFixed(1)} km* from yours.\n\nDo you want to share?`,
+    `🚕 *Cab-split request!*\n\n*${fromUser.name || 'Someone'}*${genderPart} wants to share a cab — their drop is *${distanceKm.toFixed(1)} km* from yours.\n\nInterested?`,
     [
-      { id: `ACCEPT_${fromUser.user_id}`,  title: '✅ Accept' },
+      { id: `ACCEPT_${fromUser.user_id}`,  title: '✅ Accept'  },
       { id: `DECLINE_${fromUser.user_id}`, title: '❌ Decline' },
     ]
   );
