@@ -110,11 +110,16 @@ async function resolveOrSearch(phone, msgType, locationLat, locationLon, rawText
 
   // ── 2. Pin / Maps link / raw coordinates ──
   const loc = await resolveLocation(locationLat, locationLon, rawText);
-  if (loc) return loc;
+  if (loc?.lat !== undefined) return loc; // direct coordinates found
 
   // ── 3. Free-text place name → forward geocode ──
-  if (msgType === 'text' && rawText.length >= 3) {
-    const hits = await forwardGeocode(rawText, 5);
+  // Use extracted place name from Maps URL if available; otherwise use rawText.
+  // Skip entirely when rawText is a URL we already tried (and failed) to resolve.
+  const geocodeQuery = loc?.placeName                              // extracted from Maps link
+    || (msgType === 'text' && !rawText.startsWith('http') && rawText.length >= 3 ? rawText : null);
+
+  if (geocodeQuery) {
+    const hits = await forwardGeocode(geocodeQuery, 5);
     if (hits.length > 0) {
       const rows = hits.map(h => {
         // Title: first segment before comma, capped at 24 chars
@@ -128,7 +133,7 @@ async function resolveOrSearch(phone, msgType, locationLat, locationLon, rawText
 
       await sendList(
         phone,
-        `📍 Found *${hits.length}* result${hits.length > 1 ? 's' : ''} for "*${rawText.slice(0, 40)}*":\n\nSelect the correct location, or share a 📎 pin directly.`,
+        `📍 Found *${hits.length}* result${hits.length > 1 ? 's' : ''} for "*${geocodeQuery.slice(0, 40)}*":\n\nSelect the correct location, or share a 📎 pin directly.`,
         'Choose Location',
         [{ title: 'Search Results', rows }]
       );

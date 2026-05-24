@@ -23,6 +23,21 @@ function isValidCoord(lat, lon) {
   );
 }
 
+// ── extract place name from a resolved Maps URL ───────────────────────────────
+// When a Maps short link points to a named place (not a pin), the resolved URL
+// has ?q=Place+Name+... — no coordinates.  Extract the text so the caller can
+// forward-geocode it.
+
+function extractPlaceNameFromUrl(url) {
+  // ?q=Some+Place+Name (NOT ?q=17.24,78.42 — those are coordinates)
+  const m = url.match(/[?&]q=([^&]+)/);
+  if (!m) return null;
+  const q = decodeURIComponent(m[1].replace(/\+/g, ' ')).trim();
+  // Reject if it looks like coordinates: "-17.24,78.42"
+  if (/^-?\d+\.?\d*[,\s]+-?\d+\.?\d*$/.test(q)) return null;
+  return q || null;
+}
+
 // ── extract coords from a resolved URL ───────────────────────────────────────
 
 function extractFromUrl(url) {
@@ -114,8 +129,13 @@ async function parseLocationFromText(text) {
     if (isShort) {
       const resolved = await resolveShortUrl(url);
       if (resolved) {
+        // Try coordinates first
         const fromRedirect = extractFromUrl(resolved);
         if (fromRedirect && isValidCoord(fromRedirect.lat, fromRedirect.lon)) return fromRedirect;
+
+        // Resolved URL has a place name (named-place Maps link, not a pin)
+        const placeName = extractPlaceNameFromUrl(resolved);
+        if (placeName) return { placeName };
       }
     }
   }
@@ -131,4 +151,4 @@ async function parseLocationFromText(text) {
   return null;
 }
 
-module.exports = { parseLocationFromText, isValidCoord };
+module.exports = { parseLocationFromText, isValidCoord, extractPlaceNameFromUrl };
