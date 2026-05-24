@@ -453,6 +453,12 @@ async function handleMessage(msg, waName) {
       if (listId.startsWith('match_')) {
         return handleMatchRequest(phone, listId.replace('match_', ''), user);
       }
+      // LLM fallback for ambiguous text ("stop searching", "any luck?", etc.)
+      if (msgType === 'text' && rawText.length > 0) {
+        const intent = await detectIntent(rawText, state);
+        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
+        return handleLLMIntent(intent, phone, user, waName, state);
+      }
       return sendText(phone, `You're in the matching pool! 🔍\n\nType *MATCHES* to view matches, *EDIT* to update your pickup/drop, or *CANCEL* to withdraw.`);
     }
 
@@ -472,7 +478,12 @@ async function handleMessage(msg, waName) {
         await setState(phone, 'IDLE', { is_active: false });
         return sendText(phone, `No problem! Send "hi" whenever you're ready to search again. ✈️`);
       }
-      return sendText(phone, `Please tap Yes or No on the message above to continue.`);
+      if (msgType === 'text' && rawText.length > 0) {
+        const intent = await detectIntent(rawText, state);
+        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
+        return handleLLMIntent(intent, phone, user, waName, state);
+      }
+      return sendText(phone, `Please tap *Yes* or *No* on the message above to continue.`);
     }
 
     // ── MATCH_SENT ────────────────────────────────────────────────────────────
@@ -489,6 +500,11 @@ async function handleMessage(msg, waName) {
         await setState(phone, 'POOL_EDIT_DROP');
         return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
       }
+      if (msgType === 'text' && rawText.length > 0) {
+        const intent = await detectIntent(rawText, state);
+        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
+        return handleLLMIntent(intent, phone, user, waName, state);
+      }
       return sendText(phone, `Your request is pending. They'll respond shortly.\n\nType *CANCEL* to withdraw, or *EDIT* to update your trip details.`);
     }
 
@@ -496,6 +512,11 @@ async function handleMessage(msg, waName) {
     case 'MATCH_RECEIVED': {
       if (buttonId.startsWith('ACCEPT_'))  return handleAcceptMatch(phone, buttonId.replace('ACCEPT_', ''),  user);
       if (buttonId.startsWith('DECLINE_')) return handleDeclineMatch(phone, buttonId.replace('DECLINE_', ''), user);
+      if (msgType === 'text' && rawText.length > 0) {
+        const intent = await detectIntent(rawText, state);
+        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
+        return handleLLMIntent(intent, phone, user, waName, state);
+      }
       return sendText(phone, `Please tap *Accept* or *Decline* on the request above.`);
     }
 
@@ -510,6 +531,11 @@ async function handleMessage(msg, waName) {
       if (text === 'DONE' || buttonId === 'TRIP_DONE')  return handleTripDone(phone, user);
       if (text === 'ISSUE' || buttonId === 'TRIP_ISSUE') return sendIssueMenu(phone);
 
+      if (msgType === 'text' && rawText.length > 0) {
+        const intent = await detectIntent(rawText, state);
+        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
+        return handleLLMIntent(intent, phone, user, waName, state);
+      }
       return sendText(phone, `You're matched! 🎉\n\nTap *Share Contact* to exchange numbers, *DONE* when complete, or *ISSUE* to report a problem.\nType *CANCEL* to cancel this match.`);
     }
 
