@@ -34,6 +34,16 @@ async function createVerificationPaymentLink(user) {
     customer:        { contact: `+${user.phone}` },
     notify:          { sms: false, email: false },
     reminder_enable: false,
+    options: {
+      checkout: {
+        method: {
+          upi:         1,
+          card:        1,
+          netbanking:  1,
+          wallet:      1,
+        },
+      },
+    },
     notes: {
       user_id:      user.user_id,
       payment_type: 'profile_verification',
