@@ -1,11 +1,10 @@
 const supabase = require('../config/supabase');
-const { sendText, sendButtons, sendList, sendCTAButton, sendLocationRequest } = require('../services/whatsapp');
+const { sendText, sendButtons, sendList, sendLocationRequest } = require('../services/whatsapp');
 const { getDistanceKm } = require('../utils/haversine');
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
 const { parseLocationFromText, isValidCoord } = require('../utils/locationParser');
 const { detectIntent } = require('../services/llm');
-const { generatePickerToken } = require('../utils/pickerToken');
 
 // Search window: 10 min initial, 5 min extension
 const SEARCH_WINDOW_MS  = 10 * 60 * 1000;
@@ -77,25 +76,6 @@ function prefLabel(p) {
   if (p === 'M')   return 'Only Male';
   if (p === 'F')   return 'Only Female';
   return p || 'Anyone';
-}
-
-// Send a Mappls map picker CTA button for drop/pickup location states.
-// The picker page lets users search or drag a pin to any location worldwide.
-// Only sent when SERVER_URL + MAPPLS_API_KEY are configured.
-async function sendPickerCTA(phone, label = 'drop location') {
-  const serverUrl = process.env.SERVER_URL;
-  const mapKey    = process.env.MAPPLS_API_KEY;
-  if (!serverUrl || !mapKey) return; // silently skip in dev if not configured
-
-  const token     = generatePickerToken(phone);
-  const pickerUrl = `${serverUrl}/pick?t=${token}&label=${encodeURIComponent(label)}`;
-
-  await sendCTAButton(
-    phone,
-    `Or pick any location on the map 🗺️`,
-    '📍 Open Map Picker',
-    pickerUrl
-  ).catch(e => console.error('sendPickerCTA error:', e.message));
 }
 
 // Resolve lat/lon from WhatsApp location message OR pasted text (Maps link / coords)
@@ -242,11 +222,10 @@ async function sendDropPrompt(phone, pickupLabel) {
   await sendText(
     phone,
     `📍 *Pickup:* ${pickupLabel}\n\n*Step 2 of 2* — Where should we drop you? 🎯\n\n` +
-    `• ✏️ *Type* your destination name below\n` +
-    `• 🗺️ *Use the map picker* button below (recommended)\n` +
-    `• 📍 Tap 📎 → Location → share a pin`
+    `• 📎 Tap attachment → *Location* → search or share pin\n` +
+    `• 📋 Paste *coordinates* from Google Maps\n` +
+    `  _(long-press any spot on Google Maps → copy coordinates)_`
   );
-  await sendPickerCTA(phone, 'drop location');
   await setState(phone, 'ONBOARDING_DROP');
 }
 
@@ -351,6 +330,16 @@ async function handleMessage(msg, waName) {
     // Execute the confirmed action
     console.log(`✅ Confirmed LLM action ${pendingAction} for ${phone}`);
     return handleLLMIntent({ action: pendingAction, followup: null }, phone, user, waName, state);
+  }
+
+  // ── Queue conflict buttons ────────────────────────────────────────────────
+  // Shown when user says "hi" while already in an active search state.
+  if (buttonId === 'QUEUE_EDIT') {
+    return sendPoolEditMenu(phone);
+  }
+  if (buttonId === 'QUEUE_START_NEW') {
+    await resetForNewSearch(phone, user);
+    return sendPickupPrompt(phone, true);
   }
 
   // ── Universal LLM gate ────────────────────────────────────────────────────
@@ -476,11 +465,10 @@ async function handleMessage(msg, waName) {
         }
         return sendText(phone,
           `Couldn't find that location 😕\n\n` +
-          `Share your *drop destination* using one of these:\n` +
-          `• 📍 Tap 📎 → Location → share pin (most reliable)\n` +
-          `• 🔤 Type a place name — check spelling!\n` +
-          `• 🔗 Paste a Google/Apple Maps link\n` +
-          `• 🌐 Type coordinates: *28.6139, 77.2090*`
+          `Share your *drop destination*:\n` +
+          `• 📎 Tap attachment → *Location* → search or share pin\n` +
+          `• 📋 Paste *coordinates* from Google Maps (e.g. *28.6139, 77.2090*)\n` +
+          `  _(long-press any spot on Google Maps → copy coordinates)_`
         );
       }
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
@@ -511,13 +499,12 @@ async function handleMessage(msg, waName) {
       }
       if (listId === 'EDIT_DROP') {
         await setState(phone, 'EDITING_DROP');
-        await sendText(phone,
+        return sendText(phone,
           `Where's your new drop destination? 🎯\n\n` +
-          `• ✏️ Type the place name below\n` +
-          `• 🗺️ Use the map picker button below\n` +
-          `• 📍 Tap 📎 → Location → share a pin`
+          `• 📎 Tap attachment → *Location* → search or share pin\n` +
+          `• 📋 Paste *coordinates* from Google Maps\n` +
+          `  _(long-press any spot on Google Maps → copy coordinates)_`
         );
-        return sendPickerCTA(phone, 'drop destination');
       }
 
       if (buttonId === 'CONFIRM_NO')   return startOrResume(phone, user, waName, true);
@@ -602,7 +589,11 @@ async function handleMessage(msg, waName) {
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
         }
-        return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+        return sendText(phone,
+          `Share your new *drop destination* 🎯\n\n` +
+          `• 📎 Tap attachment → *Location* → search or share pin\n` +
+          `• 📋 Paste *coordinates* from Google Maps (e.g. *28.6139, 77.2090*)`
+        );
       }
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
@@ -652,7 +643,11 @@ async function handleMessage(msg, waName) {
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
           if (intent.followup) return sendText(phone, intent.followup);
         }
-        return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Google/Apple Maps link, or type coordinates.`);
+        return sendText(phone,
+          `Share your new *drop destination* 🎯\n\n` +
+          `• 📎 Tap attachment → *Location* → search or share pin\n` +
+          `• 📋 Paste *coordinates* from Google Maps (e.g. *28.6139, 77.2090*)`
+        );
       }
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
@@ -684,13 +679,12 @@ async function handleMessage(msg, waName) {
       if (buttonId === 'POOL_EDIT_DROP') {
         await cancelPendingRequestsFrom(user);
         await setState(phone, 'POOL_EDIT_DROP');
-        await sendText(phone,
+        return sendText(phone,
           `Where's your new drop destination? 🎯\n\n` +
-          `• ✏️ Type the place name below\n` +
-          `• 🗺️ Use the map picker button below\n` +
-          `• 📍 Tap 📎 → Location → share a pin`
+          `• 📎 Tap attachment → *Location* → search or share pin\n` +
+          `• 📋 Paste *coordinates* from Google Maps\n` +
+          `  _(long-press any spot on Google Maps → copy coordinates)_`
         );
-        return sendPickerCTA(phone, 'drop destination');
       }
 
       if (listId.startsWith('match_')) {
@@ -730,13 +724,12 @@ async function handleMessage(msg, waName) {
       if (buttonId === 'POOL_EDIT_DROP') {
         await handleCancelSentRequest(phone, user);
         await setState(phone, 'POOL_EDIT_DROP');
-        await sendText(phone,
+        return sendText(phone,
           `Where's your new drop destination? 🎯\n\n` +
-          `• ✏️ Type the place name below\n` +
-          `• 🗺️ Use the map picker button below\n` +
-          `• 📍 Tap 📎 → Location → share a pin`
+          `• 📎 Tap attachment → *Location* → search or share pin\n` +
+          `• 📋 Paste *coordinates* from Google Maps\n` +
+          `  _(long-press any spot on Google Maps → copy coordinates)_`
         );
-        return sendPickerCTA(phone, 'drop destination');
       }
       return sendText(phone, `Your request is pending. They'll respond shortly.\n\nType *CANCEL* to withdraw, or *EDIT* to update your trip details.`);
     }
@@ -813,7 +806,79 @@ async function handleMessage(msg, waName) {
 
 // ── Entry point: determine if new or returning user ───────────────────────────
 
+// States where user already has an active search — block a second request
+const ACTIVE_SEARCH_STATES = new Set(['WAITING', 'WAITING_RETRY', 'MATCH_SENT', 'MATCH_RECEIVED', 'MATCHED']);
+
+async function sendAlreadyInQueueMsg(phone, user) {
+  const pickup = user.pickup_label || 'Not set';
+  const drop   = user.drop_label   || 'Not set';
+
+  await sendButtons(
+    phone,
+    `You're already searching for a cab partner! 🔍\n\n` +
+    `📍 *Pickup:* ${pickup}\n` +
+    `🎯 *Drop:* ${drop}\n\n` +
+    `You can only have one active request at a time.\n` +
+    `What would you like to do?`,
+    [
+      { id: 'QUEUE_EDIT',      title: '✏️ Edit Request' },
+      { id: 'QUEUE_START_NEW', title: '🔄 Start New'    },
+    ]
+  );
+}
+
+// Cancel everything and clear the user's active session so they can start fresh
+async function resetForNewSearch(phone, user) {
+  // Cancel pending requests sent by this user
+  await cancelPendingRequestsFrom(user);
+
+  // If matched, notify partner they're back in the pool
+  if (user.is_matched && user.matched_with) {
+    try {
+      const { data: partner } = await supabase.from('users').select('*').eq('user_id', user.matched_with).single();
+      if (partner) {
+        await setState(partner.phone, 'WAITING', { is_matched: false, matched_with: null });
+        await sendText(partner.phone, `Your cab-split partner started a new search. You're back in the pool! 🔄`).catch(() => {});
+      }
+    } catch (e) { console.error('resetForNewSearch partner error:', e.message); }
+  }
+
+  // If user received a request they haven't responded to, cancel it and notify sender
+  if (user.state === 'MATCH_RECEIVED' && user.pending_request_id) {
+    try {
+      await supabase.from('match_requests')
+        .update({ status: 'cancelled_by_receiver', cancelled_at: new Date().toISOString() })
+        .eq('request_id', user.pending_request_id)
+        .eq('status', 'pending');
+
+      const { data: req } = await supabase.from('match_requests')
+        .select('from_user').eq('request_id', user.pending_request_id).single();
+      if (req) {
+        const { data: sender } = await supabase.from('users').select('phone').eq('user_id', req.from_user).single();
+        if (sender) {
+          await setState(sender.phone, 'WAITING', { pending_request_id: null });
+          await sendText(sender.phone, `The person you requested started a new search. You're back in the pool! 🔄`).catch(() => {});
+        }
+      }
+    } catch (e) { console.error('resetForNewSearch MATCH_RECEIVED error:', e.message); }
+  }
+
+  // Clear the user's active session flags
+  await upsertUser(phone, {
+    is_active:           false,
+    is_matched:          false,
+    matched_with:        null,
+    pending_request_id:  null,
+    updated_at:          new Date().toISOString(),
+  });
+}
+
 async function startOrResume(phone, user, waName, forceRestart) {
+  // If already in an active search and this is NOT a force-restart → block and show options
+  if (!forceRestart && user?.state && ACTIVE_SEARCH_STATES.has(user.state)) {
+    return sendAlreadyInQueueMsg(phone, user);
+  }
+
   // Returning user with name + gender already set — skip profile steps
   if (!forceRestart && user?.name && user?.gender) {
     await sendText(phone, `Welcome back, *${user.name}*! 👋\n\nLet's find you a ride-share partner.`);
@@ -1311,13 +1376,12 @@ async function handleLLMIntent(intent, phone, user, waName, state) {
     case 'EDIT_DROP': {
       await cancelPendingRequestsFrom(user);
       await setState(phone, 'POOL_EDIT_DROP');
-      await sendText(phone,
+      return sendText(phone,
         `Where's your new drop destination? 🎯\n\n` +
-        `• ✏️ Type the place name below\n` +
-        `• 🗺️ Use the map picker button below\n` +
-        `• 📍 Tap 📎 → Location → share a pin`
+        `• 📎 Tap attachment → *Location* → search or share pin\n` +
+        `• 📋 Paste *coordinates* from Google Maps\n` +
+        `  _(long-press any spot on Google Maps → copy coordinates)_`
       );
-      return sendPickerCTA(phone, 'drop destination');
     }
 
     case 'STATUS':  return sendStatus(phone);
