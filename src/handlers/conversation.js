@@ -1,6 +1,7 @@
 const supabase = require('../config/supabase');
 const { sendText, sendButtons, sendList, sendLocationRequest, sendCTAButton } = require('../services/whatsapp');
 const { logError } = require('../utils/errorLogger');
+const { createVerificationPaymentLink } = require('../services/razorpay');
 const { getDistanceKm } = require('../utils/haversine');
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
@@ -491,21 +492,66 @@ async function handleMessage(msg, waName) {
       if (buttonId === 'EDIT_DETAILS') return sendEditMenu(phone);
       if (buttonId !== 'CONFIRM_YES')  return sendConfirmation(phone, user);
 
-      const now = new Date().toISOString();
-      const activeUser = await setState(phone, 'WAITING', {
-        is_active:         true,
-        is_matched:        false,
-        search_started_at: now,
-        expires_at:        new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
-      });
+      await syncProfileFields(phone, user);
 
-      await syncProfileFields(phone, activeUser);
+      // ── Returning verified user — skip payment, join pool immediately ──
+      if (user.payment_verified) {
+        const now = new Date().toISOString();
+        const activeUser = await setState(phone, 'WAITING', {
+          is_active:         true,
+          is_matched:        false,
+          search_started_at: now,
+          expires_at:        new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
+        });
+        await sendText(phone, `✅ *You're in!* Searching for a cab-split partner near you... 🔍`);
+        const matches = await findMatches(activeUser);
+        await sendMatchResults(activeUser, matches);
+        await notifyWaitingUsers(activeUser, matches);
+        return;
+      }
 
-      await sendText(phone, `✅ *You're in!* Searching for a cab-split partner near you... 🔍`);
-      const matches = await findMatches(activeUser);
-      await sendMatchResults(activeUser, matches);
-      await notifyWaitingUsers(activeUser, matches);
+      // ── First-time user — send ₹1 verification payment link ──
+      try {
+        const paymentUrl = await createVerificationPaymentLink(user);
+        await setState(phone, 'PAYMENT_PENDING');
+        await sendCTAButton(
+          phone,
+          `✅ *Details saved!*\n\n` +
+          `One last step — a one-time ₹1 verification fee to join the pool.\n` +
+          `This keeps fake profiles out and you'll never be charged again.\n\n` +
+          `Tap below to pay securely via Razorpay:`,
+          '💳 Pay ₹1 to Join',
+          paymentUrl
+        );
+      } catch (e) {
+        logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'createVerificationPaymentLink', message: e.message, phone, userState: 'ONBOARDING_CONFIRM', error: e }).catch(() => {});
+        await sendText(phone, `Something went wrong generating your payment link 😕\n\nPlease tap *Confirm* again to retry.`);
+      }
       return;
+    }
+
+    // ── PAYMENT PENDING ───────────────────────────────────────────────────────
+    // User confirmed details and was sent a payment link — waiting for payment.
+    // Webhook will move them to WAITING automatically once paid.
+    case 'PAYMENT_PENDING': {
+      // Allow cancel — goes back to confirmation screen
+      if (text === 'CANCEL' || buttonId === 'CONFIRM_NO') {
+        await setState(phone, 'ONBOARDING_CONFIRM');
+        return sendConfirmation(phone, user);
+      }
+      // Any other input: resend the payment link
+      try {
+        const paymentUrl = await createVerificationPaymentLink(user);
+        return sendCTAButton(
+          phone,
+          `Your details are saved 👍 Complete your one-time ₹1 verification to join the pool:`,
+          '💳 Pay ₹1 to Join',
+          paymentUrl
+        );
+      } catch (e) {
+        logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'resendPaymentLink', message: e.message, phone, userState: 'PAYMENT_PENDING', error: e }).catch(() => {});
+        return sendText(phone, `Having trouble with payment right now 😕 Please try again in a moment.`);
+      }
     }
 
     // ── EDITING: NAME ─────────────────────────────────────────────────────────
@@ -843,6 +889,22 @@ async function resetForNewSearch(phone, user) {
 }
 
 async function startOrResume(phone, user, waName, forceRestart) {
+  // If payment is pending and this isn't a force-restart → resend payment link
+  if (!forceRestart && user?.state === 'PAYMENT_PENDING') {
+    try {
+      const paymentUrl = await createVerificationPaymentLink(user);
+      return sendCTAButton(
+        phone,
+        `Your details are saved 👍 Complete your one-time ₹1 verification to join the pool:`,
+        '💳 Pay ₹1 to Join',
+        paymentUrl
+      );
+    } catch (e) {
+      logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'startOrResume_paymentPending', message: e.message, phone, error: e }).catch(() => {});
+      return sendText(phone, `Having trouble with payment right now 😕 Please try again in a moment.`);
+    }
+  }
+
   // If already in an active search and this is NOT a force-restart → block and show options
   if (!forceRestart && user?.state && ACTIVE_SEARCH_STATES.has(user.state)) {
     return sendAlreadyInQueueMsg(phone, user);

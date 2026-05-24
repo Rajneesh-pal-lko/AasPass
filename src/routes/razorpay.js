@@ -1,65 +1,140 @@
-const express = require('express');
-const router = express.Router();
-const supabase = require('../config/supabase');
-const { verifyWebhookSignature } = require('../services/razorpay');
-const { sendText } = require('../services/whatsapp');
+/**
+ * Razorpay routes for AasPass.
+ *
+ * POST /razorpay/webhook  — Razorpay event sink (signature-verified)
+ * GET  /razorpay/callback — Browser redirect after payment; tells user to return to WhatsApp
+ */
 
-// Razorpay webhook — raw body needed for signature verification
+const express  = require('express');
+const router   = express.Router();
+const supabase = require('../config/supabase');
+const { verifyWebhookSignature }  = require('../services/razorpay');
+const { sendText }                = require('../services/whatsapp');
+const { findMatches, sendMatchResults } = require('../services/matching');
+const { logError }                = require('../utils/errorLogger');
+
+const SEARCH_WINDOW_MS = 10 * 60 * 1000; // 10 minutes — must match conversation.js
+
+// ── POST /razorpay/webhook ─────────────────────────────────────────────────────
+// raw body required for signature verification — DO NOT add json() middleware here
+
 router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
-  const rawBody = req.body;
+  const rawBody   = req.body;
 
   if (!verifyWebhookSignature(rawBody, signature)) {
-    console.warn('Invalid Razorpay signature ❌');
+    console.warn('Razorpay: invalid signature ❌');
     return res.sendStatus(400);
   }
 
-  res.sendStatus(200); // ack immediately
+  res.sendStatus(200); // ack immediately before any async work
 
-  const event = JSON.parse(rawBody.toString());
-  if (event.event !== 'payment_link.paid') return;
+  let event;
+  try {
+    event = JSON.parse(rawBody.toString());
+  } catch (e) {
+    logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'webhook_parse', message: e.message, error: e }).catch(() => {});
+    return;
+  }
 
-  const notes = event.payload?.payment_link?.entity?.notes || {};
-  const { user_id, match_id } = notes;
+  if (event.event !== 'payment_link.paid') return; // ignore other events
 
-  if (!user_id || !match_id) return;
+  const notes        = event.payload?.payment_link?.entity?.notes || {};
+  const { user_id, payment_type } = notes;
 
-  // Mark payment verified
-  await supabase.from('users').update({ payment_verified: true }).eq('user_id', user_id);
+  if (!user_id) return;
 
-  // Get both users
-  const { data: userA } = await supabase.from('users').select('*').eq('user_id', user_id).single();
-  const { data: req_ } = await supabase.from('match_requests').select('*').eq('request_id', match_id).single();
-  if (!userA || !req_) return;
-
-  const otherUserId = req_.from_user === user_id ? req_.to_user : req_.from_user;
-  const { data: userB } = await supabase.from('users').select('*').eq('user_id', otherUserId).single();
-  if (!userB) return;
-
-  // Share contact details
-  const msg = (them, you) =>
-    `🎉 Your cab split partner's details:\n\n` +
-    `📱 WhatsApp: wa.me/${them.phone}\n` +
-    `📍 Drop zone: ${them.drop_zone}\n\n` +
-    `Meet at *Arrivals* gate and split an Uber 50/50. Safe travels! ✈️`;
-
-  await sendText(userA.phone, msg(userB, userA));
-  await sendText(userB.phone, msg(userA, userB));
-
-  // Send trip confirmation buttons to both
-  const { sendButtons } = require('../services/whatsapp');
-  const confirmMsg = `Did your cab split work out? Let us know!`;
-  const buttons = [
-    { id: 'TRIP_DONE',  title: '✅ Yes, Done!' },
-    { id: 'TRIP_ISSUE', title: '❌ Issue' },
-  ];
-  await sendButtons(userA.phone, confirmMsg, buttons);
-  await sendButtons(userB.phone, confirmMsg, buttons);
+  try {
+    await handleProfileVerificationPayment(user_id, event);
+  } catch (e) {
+    logError({ severity: 'CRITICAL', type: 'PAYMENT', operation: 'handleProfileVerificationPayment', message: e.message, context: { user_id, payment_type }, error: e }).catch(() => {});
+  }
 });
 
-// Razorpay redirect callback (GET — after payment)
+// ── Profile verification payment handler ──────────────────────────────────────
+
+async function handleProfileVerificationPayment(user_id, event) {
+  // Mark payment as verified — idempotent, safe to call multiple times
+  await supabase.from('users').update({ payment_verified: true }).eq('user_id', user_id);
+
+  const { data: user } = await supabase.from('users').select('*').eq('user_id', user_id).single();
+  if (!user) {
+    console.warn(`Razorpay webhook: user ${user_id} not found after payment`);
+    return;
+  }
+
+  // Only activate if user is in PAYMENT_PENDING — guard against duplicate webhooks
+  if (user.state !== 'PAYMENT_PENDING') {
+    console.log(`Razorpay webhook: user ${user.phone} already in state ${user.state}, skipping activation`);
+    return;
+  }
+
+  // Move user into the matching pool
+  const now = new Date().toISOString();
+  const { data: activeUser } = await supabase.from('users').update({
+    state:             'WAITING',
+    is_active:         true,
+    is_matched:        false,
+    search_started_at: now,
+    expires_at:        new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
+    updated_at:        now,
+  }).eq('user_id', user_id).select().single();
+
+  if (!activeUser) return;
+
+  // Notify user and show matches
+  await sendText(user.phone, `✅ *Payment confirmed!* You're now in the matching pool.\n\n🔍 Searching for a cab-split partner near you...`);
+
+  const matches = await findMatches(activeUser);
+  await sendMatchResults(activeUser, matches);
+
+  // Notify the top waiting users that a new partner just joined
+  for (const match of matches.slice(0, 5)) {
+    if (match.state !== 'WAITING') continue;
+    try {
+      const { data: fresh } = await supabase.from('users').select('*').eq('user_id', match.user_id).single();
+      if (!fresh || !fresh.is_active || fresh.state !== 'WAITING') continue;
+      const theirMatches = await findMatches(fresh);
+      await sendText(fresh.phone, `🚕 A new cab-split partner just joined nearby!`);
+      await sendMatchResults(fresh, theirMatches);
+    } catch (e) {
+      console.error(`Razorpay webhook: notify error for ${match.phone}:`, e.message);
+    }
+  }
+}
+
+// ── GET /razorpay/callback ─────────────────────────────────────────────────────
+// Razorpay redirects the browser here after payment. Tell the user to return to WhatsApp.
+
 router.get('/callback', (req, res) => {
-  res.send('<h2>Payment received! Return to WhatsApp to continue. ✈️</h2>');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AasPass – Payment Confirmed</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           display: flex; align-items: center; justify-content: center;
+           min-height: 100vh; margin: 0; background: #f0f4f8; }
+    .card { background: #fff; border-radius: 16px; padding: 40px 32px;
+            text-align: center; max-width: 360px; box-shadow: 0 4px 24px rgba(0,0,0,0.10); }
+    h1 { color: #25D366; font-size: 28px; margin: 0 0 8px }
+    p  { color: #555; font-size: 16px; line-height: 1.5; margin: 0 0 24px }
+    a  { display: inline-block; background: #25D366; color: #fff;
+         padding: 14px 28px; border-radius: 10px; text-decoration: none;
+         font-weight: 700; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>✅ Payment Done!</h1>
+    <p>Your ₹1 verification is confirmed.<br>Go back to WhatsApp — the bot will continue automatically.</p>
+    <a href="https://wa.me/${process.env.WHATSAPP_PHONE_NUMBER_ID ? '' : ''}">↩ Back to WhatsApp</a>
+  </div>
+</body>
+</html>`);
 });
 
 module.exports = router;
