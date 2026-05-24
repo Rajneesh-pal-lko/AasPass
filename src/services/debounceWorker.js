@@ -66,11 +66,12 @@ async function flushReady() {
     // Belt-and-suspenders: attempt to clear the lock and notify the user.
     console.error(`debounceWorker: processMessage threw for ${row.phone}:`, e.message);
 
-    await supabase
-      .from('users')
-      .update({ is_processing: false, lock_token: null, lock_acquired_at: null })
-      .eq('phone', row.phone)
-      .catch(() => {});
+    try {
+      await supabase
+        .from('users')
+        .update({ is_processing: false, lock_token: null, lock_acquired_at: null })
+        .eq('phone', row.phone);
+    } catch {}
 
     await sendText(
       row.phone,
@@ -80,12 +81,15 @@ async function flushReady() {
     // Delete the claimed row — but ONLY if it's still PROCESSING.
     // If the user sent a new message while we were processing, that UPSERT reset
     // the row to BUFFERING. Leaving it lets the next poll pick it up correctly.
-    await supabase
-      .from('message_buffer')
-      .delete()
-      .eq('phone', row.phone)
-      .eq('status', 'PROCESSING')
-      .catch(e => console.error('debounceWorker: delete buffer error:', e.message));
+    try {
+      await supabase
+        .from('message_buffer')
+        .delete()
+        .eq('phone', row.phone)
+        .eq('status', 'PROCESSING');
+    } catch (e) {
+      console.error('debounceWorker: delete buffer error:', e.message);
+    }
   }
 }
 
