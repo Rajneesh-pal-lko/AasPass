@@ -11,7 +11,7 @@ const headers = () => ({
 async function sendMessage(to, payload) {
   const body = { messaging_product: 'whatsapp', to, ...payload };
   try {
-    const res = await axios.post(BASE_URL, body, { headers: headers() });
+    const res = await axios.post(BASE_URL, body, { headers: headers(), timeout: 3000 });
     console.log(`✅ Message sent to ${to}`);
 
     // Log outgoing message

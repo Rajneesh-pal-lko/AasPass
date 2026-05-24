@@ -6,7 +6,7 @@ const { sendText, sendButtons } = require('./whatsapp');
 // No more time arithmetic in code — just compare expires_at < NOW().
 
 function startCleanupJob() {
-  // Runs every 2 minutes
+  // Runs every 2 minutes — handles user session expiry
   cron.schedule('*/2 * * * *', async () => {
     const now = new Date().toISOString();
     await promoteToRetry(now);
@@ -14,7 +14,14 @@ function startCleanupJob() {
     await safetyExpire(now);
   });
 
-  console.log('Cleanup cron started (runs every 2 min) 🧹');
+  // Runs every 10 minutes — infrastructure housekeeping
+  cron.schedule('*/10 * * * *', async () => {
+    await resetStaleLocks();
+    await purgeOldWebhooks();
+    await expirePendingMessages();
+  });
+
+  console.log('Cleanup cron started (every 2 min + every 10 min) 🧹');
 }
 
 // ── 1. WAITING users whose expires_at passed → ask to extend ─────────────────
@@ -122,6 +129,31 @@ async function safetyExpire(now) {
   }
 
   if (stale.length) console.log(`Cleanup: safety-expired ${stale.length} stale user(s)`);
+}
+
+// ── Infrastructure: stale lock recovery ───────────────────────────────────────
+// If a Node.js process crashed while holding a user lock, the user would be
+// permanently stuck. This frees locks older than 30 seconds.
+
+async function resetStaleLocks() {
+  const { data, error } = await supabase.rpc('reset_stale_locks', { max_age_seconds: 30 });
+  if (!error && data > 0) console.log(`Cleanup: reset ${data} stale processing lock(s)`);
+}
+
+// ── Infrastructure: purge old processed_webhooks ──────────────────────────────
+// Keeps the dedup table lean — only need 24h of history.
+
+async function purgeOldWebhooks() {
+  const { data, error } = await supabase.rpc('cleanup_old_webhooks');
+  if (!error && data > 0) console.log(`Cleanup: purged ${data} old webhook record(s)`);
+}
+
+// ── Infrastructure: expire stale pending messages ─────────────────────────────
+// Messages sitting in the queue for > 2 hours are no longer relevant.
+
+async function expirePendingMessages() {
+  const { data, error } = await supabase.rpc('cleanup_pending_messages');
+  if (!error && data > 0) console.log(`Cleanup: expired ${data} stale pending message(s)`);
 }
 
 module.exports = { startCleanupJob };

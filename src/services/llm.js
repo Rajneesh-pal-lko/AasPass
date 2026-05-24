@@ -101,7 +101,7 @@ async function callOpenAI(systemPrompt, userMessage) {
     },
     {
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      timeout: 8000,
+      timeout: 2500, // hard 2.5s — LLM must not block user experience
     }
   );
 
@@ -128,7 +128,7 @@ async function callAnthropic(systemPrompt, userMessage) {
         'anthropic-version': '2023-06-01',
         'Content-Type':      'application/json',
       },
-      timeout: 8000,
+      timeout: 2500,
     }
   );
 

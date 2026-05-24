@@ -31,6 +31,11 @@ const HARD_KEYWORDS = new Set([
   'CONFIRM CANCEL', 'BACK', 'SKIP',
 ]);
 
+// LLM actions that can cause irreversible state changes.
+// When LLM classifies one of these from NATURAL LANGUAGE (not a hard button),
+// we ask the user to explicitly confirm before executing.
+const DESTRUCTIVE_ACTIONS = new Set(['CANCEL', 'TRIP_DONE', 'REPORT_ISSUE']);
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 async function getUser(phone) {
@@ -294,22 +299,45 @@ async function handleMessage(msg, waName) {
   if (text === 'RESTART' || text === 'START') return startOrResume(phone, user, waName, true);
   if (text === 'HI' || text === '' && state === 'IDLE') return startOrResume(phone, user, waName, false);
 
+  // ── LLM destructive action confirmation ──────────────────────────────────
+  // Handles Yes/No taps on confirmation buttons that were sent when the LLM
+  // classified a destructive action (CANCEL, TRIP_DONE, REPORT_ISSUE).
+  // These button IDs are only ever produced by sendConfirmationPrompt() below,
+  // so they're safe to intercept globally before the state switch.
+  if (buttonId === 'CONFIRM_LLM_YES' || buttonId === 'CONFIRM_LLM_NO') {
+    const pendingAction = user?.pending_llm_action;
+    // Clear the pending action regardless of what the user chose
+    await upsertUser(phone, { pending_llm_action: null });
+
+    if (buttonId === 'CONFIRM_LLM_NO' || !pendingAction) {
+      return sendText(phone, `No problem! Continuing as before. 👍`);
+    }
+    // Execute the confirmed action
+    console.log(`✅ Confirmed LLM action ${pendingAction} for ${phone}`);
+    return handleLLMIntent({ action: pendingAction, followup: null }, phone, user, waName, state);
+  }
+
   // ── Universal LLM gate ────────────────────────────────────────────────────
   // Fires for EVERY text message that isn't:
   //   • A hard keyword the switch already handles (CANCEL, MATCHES, DONE…)
   //   • A location state (geocoding runs first; LLM fires as fallback inside the case)
   //   • A free-text capture state (ONBOARDING_NAME, RATING_FEEDBACK…)
   //
-  // If LLM returns a known action → execute it immediately.
-  // If LLM returns UNKNOWN → fall through to the state switch for a
-  //   context-specific hint (e.g. "please share your pickup pin").
+  // Destructive LLM actions (CANCEL, TRIP_DONE, REPORT_ISSUE) are confirmed
+  // before execution. Non-destructive actions execute immediately.
+  // UNKNOWN → fall through to the state switch for a context-specific hint.
   if (msgType === 'text' && rawText.length > 0
       && !LOCATION_STATES.has(state)
       && !FREE_TEXT_STATES.has(state)
       && !HARD_KEYWORDS.has(text)) {
     const intent = await detectIntent(rawText, state);
     console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
+
     if (intent.action !== 'UNKNOWN') {
+      if (DESTRUCTIVE_ACTIONS.has(intent.action)) {
+        // Store action and ask user to confirm before executing
+        return sendConfirmationPrompt(phone, intent.action, user);
+      }
       return handleLLMIntent(intent, phone, user, waName, state);
     }
     // UNKNOWN → fall through so the state switch can give a context-aware hint
@@ -1091,6 +1119,30 @@ async function sendIssueMenu(phone) {
     }]
   );
   await setState(phone, 'REPORTING');
+}
+
+// ── LLM destructive action confirmation ──────────────────────────────────────
+// Called when LLM predicts a destructive action from natural language.
+// Saves the action to DB and sends an explicit Yes/No prompt.
+// Only CONFIRM_LLM_YES actually executes the action.
+
+const CONFIRMATION_MESSAGES = {
+  CANCEL:       `Are you sure you want to *cancel* and leave the matching pool?`,
+  TRIP_DONE:    `Confirm that your trip is *complete*?`,
+  REPORT_ISSUE: `Do you want to *report an issue* with your match?`,
+};
+
+async function sendConfirmationPrompt(phone, action, user) {
+  const question = CONFIRMATION_MESSAGES[action]
+    || `Are you sure you want to *${action.toLowerCase().replace('_', ' ')}*?`;
+
+  // Save the pending action so we can execute it after confirmation
+  await upsertUser(phone, { pending_llm_action: action });
+
+  return sendButtons(phone, question, [
+    { id: 'CONFIRM_LLM_YES', title: '✅ Yes, proceed'   },
+    { id: 'CONFIRM_LLM_NO',  title: '❌ No, go back'    },
+  ]);
 }
 
 // ── Notify waiting users ──────────────────────────────────────────────────────
