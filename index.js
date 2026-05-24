@@ -36,8 +36,10 @@ app.use('/admin',    adminRouter);
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'AasPass' }));
 
 // Start background jobs
-const { startCleanupJob } = require('./src/services/cleanup');
+const { startCleanupJob }    = require('./src/services/cleanup');
+const { startDebounceWorker } = require('./src/services/debounceWorker');
 startCleanupJob();
+startDebounceWorker();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

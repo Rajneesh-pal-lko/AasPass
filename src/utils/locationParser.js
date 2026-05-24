@@ -65,6 +65,10 @@ function extractFromUrl(url) {
   m = url.match(/[?&]ll=(-?\d+\.?\d+),(-?\d+\.?\d+)/);
   if (m) return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };
 
+  // ?coordinate=lat,lon (Apple Maps place links — comma URL-encoded as %2C)
+  m = url.match(/[?&]coordinate=(-?\d+\.?\d+)(?:%2C|,)(-?\d+\.?\d+)/i);
+  if (m) return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };
+
   // /place/lat,lng  (Google Maps place links)
   m = url.match(/\/place\/(-?\d+\.?\d+),(-?\d+\.?\d+)/);
   if (m) return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };

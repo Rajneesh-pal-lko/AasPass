@@ -74,3 +74,98 @@ create table if not exists support_queue (
   created_at      timestamptz not null default now(),
   resolved        boolean not null default false
 );
+
+-- ── message_buffer ────────────────────────────────────────────────────────────
+-- Debounce buffer: aggregates rapid text messages before FSM processing.
+-- One row per phone. Interactive/location messages bypass this table entirely.
+create table if not exists message_buffer (
+  phone            text primary key,
+  buffer_text      text    not null default '',
+  wa_name          text,
+  first_message_at timestamptz not null default now(),
+  last_message_at  timestamptz not null default now(),
+  flush_after      timestamptz not null default now(),
+  status           text    not null default 'BUFFERING'
+                   check (status in ('BUFFERING', 'PROCESSING'))
+);
+
+-- Partial index: worker only scans BUFFERING rows — keeps polling virtually free
+create index if not exists idx_message_buffer_flush
+  on message_buffer (flush_after)
+  where status = 'BUFFERING';
+
+-- ── RPC: buffer_incoming_message ──────────────────────────────────────────────
+-- Append-UPSERT a text message. On conflict resets flush window and re-buffers,
+-- even if a worker had claimed the row (status reset to BUFFERING is safe because
+-- the worker's DELETE uses WHERE status = 'PROCESSING' — it won't clobber new data).
+create or replace function buffer_incoming_message(
+  p_phone    text,
+  p_text     text,
+  p_wa_name  text,
+  p_flush_ms int default 1500
+)
+returns void
+language plpgsql
+as $$
+begin
+  insert into message_buffer (phone, buffer_text, wa_name, flush_after)
+  values (
+    p_phone,
+    p_text,
+    p_wa_name,
+    now() + (p_flush_ms || ' milliseconds')::interval
+  )
+  on conflict (phone) do update set
+    buffer_text     = case
+                        when message_buffer.buffer_text = '' then excluded.buffer_text
+                        else message_buffer.buffer_text || E'\n' || excluded.buffer_text
+                      end,
+    wa_name         = excluded.wa_name,
+    last_message_at = now(),
+    flush_after     = now() + (p_flush_ms || ' milliseconds')::interval,
+    status          = 'BUFFERING';
+end;
+$$;
+
+-- ── RPC: claim_ready_buffer_row ───────────────────────────────────────────────
+-- Atomically claims one BUFFERING row whose flush window has elapsed.
+-- FOR UPDATE SKIP LOCKED prevents convoy: concurrent workers skip each other.
+create or replace function claim_ready_buffer_row()
+returns setof message_buffer
+language plpgsql
+as $$
+begin
+  return query
+    update message_buffer
+    set status = 'PROCESSING'
+    where phone = (
+      select phone
+      from   message_buffer
+      where  status = 'BUFFERING'
+        and  flush_after <= now()
+      order  by flush_after
+      limit  1
+      for update skip locked
+    )
+    returning *;
+end;
+$$;
+
+-- ── RPC: cleanup_stale_buffer_rows ───────────────────────────────────────────
+-- Crash recovery: delete PROCESSING rows older than max_age_seconds.
+-- Called by the 10-minute cron. A row stuck in PROCESSING means the worker
+-- crashed mid-flight before the finally block could delete it.
+create or replace function cleanup_stale_buffer_rows(max_age_seconds int default 60)
+returns int
+language plpgsql
+as $$
+declare
+  deleted_count int;
+begin
+  delete from message_buffer
+  where  status = 'PROCESSING'
+    and  last_message_at < now() - (max_age_seconds || ' seconds')::interval;
+  get diagnostics deleted_count = row_count;
+  return deleted_count;
+end;
+$$;

@@ -1,6 +1,8 @@
 const express = require('express');
 const router  = express.Router();
-const { processMessage } = require('../services/processor');
+
+const supabase  = require('../config/supabase');
+const { processMessage, isDuplicate, markProcessed } = require('../services/processor');
 const { logMessage, updateProfile } = require('../services/messageLogger');
 
 // ── Meta webhook verification (GET) ──────────────────────────────────────────
@@ -68,10 +70,46 @@ router.post('/', (req, res) => {
           userState:   null,
         }).catch(() => {});
 
-        // Hand off to processor — handles dedup, locking, queuing
-        await processMessage(msg, waName).catch(err =>
-          console.error(`❌ processMessage error from ${msg.from}:`, err.message)
-        );
+        // ── Route: text vs. interactive / location ────────────────────────────
+        if (msg.type === 'text') {
+          // Text messages are debounced: aggregate rapid inputs before FSM fires.
+          // Dedup here (before buffering) so Meta retries don't double-append.
+          if (await isDuplicate(msg.id)) {
+            console.log(`⚡ Duplicate text ${msg.id} from ${msg.from} — skipped`);
+            continue;
+          }
+          await markProcessed(msg.id, msg.from);
+
+          await supabase
+            .rpc('buffer_incoming_message', {
+              p_phone:   msg.from,
+              p_text:    msg.text?.body || '',
+              p_wa_name: waName,
+            })
+            .then(({ error }) => {
+              if (error) console.error(`❌ Buffer UPSERT error for ${msg.from}:`, error.message);
+              else       console.log(`📥 Buffered text for ${msg.from}`);
+            });
+
+        } else {
+          // Interactive (button/list) and location messages are definitive actions —
+          // they must be processed immediately, bypassing the debounce buffer.
+          //
+          // Order-inversion fix: if the user texted "cancel" (still buffering) and
+          // then tapped [Accept Match], the Accept wins. Discard the pending text.
+          const { error: delErr } = await supabase
+            .from('message_buffer')
+            .delete()
+            .eq('phone', msg.from)
+            .eq('status', 'BUFFERING');
+
+          if (delErr) console.error(`❌ Buffer clear error for ${msg.from}:`, delErr.message);
+
+          // processMessage handles its own dedup, locking, and queue drain
+          await processMessage(msg, waName).catch(err =>
+            console.error(`❌ processMessage error from ${msg.from}:`, err.message)
+          );
+        }
       }
     } catch (err) {
       console.error('Webhook dispatch error:', err.message);

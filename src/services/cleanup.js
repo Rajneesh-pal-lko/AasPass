@@ -19,6 +19,7 @@ function startCleanupJob() {
     await resetStaleLocks();
     await purgeOldWebhooks();
     await expirePendingMessages();
+    await cleanupStaleBufferRows();
   });
 
   console.log('Cleanup cron started (every 2 min + every 10 min) 🧹');
@@ -154,6 +155,15 @@ async function purgeOldWebhooks() {
 async function expirePendingMessages() {
   const { data, error } = await supabase.rpc('cleanup_pending_messages');
   if (!error && data > 0) console.log(`Cleanup: expired ${data} stale pending message(s)`);
+}
+
+// ── Infrastructure: clean up stale debounce buffer rows ───────────────────────
+// A row stuck in PROCESSING > 60s means the debounce worker crashed mid-flight.
+// Reset it so the user isn't permanently silenced.
+
+async function cleanupStaleBufferRows() {
+  const { data, error } = await supabase.rpc('cleanup_stale_buffer_rows', { max_age_seconds: 60 });
+  if (!error && data > 0) console.log(`Cleanup: cleared ${data} stale buffer row(s)`);
 }
 
 module.exports = { startCleanupJob };

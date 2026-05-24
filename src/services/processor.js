@@ -155,4 +155,4 @@ async function processMessage(msg, waName) {
   }
 }
 
-module.exports = { processMessage };
+module.exports = { processMessage, isDuplicate, markProcessed };
