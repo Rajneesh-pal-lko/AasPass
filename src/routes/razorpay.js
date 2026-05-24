@@ -9,7 +9,7 @@ const express  = require('express');
 const router   = express.Router();
 const supabase = require('../config/supabase');
 const { verifyWebhookSignature }  = require('../services/razorpay');
-const { sendText }                = require('../services/whatsapp');
+const { sendText, sendLocationRequest } = require('../services/whatsapp');
 const { findMatches, sendMatchResults } = require('../services/matching');
 const { logError }                = require('../utils/errorLogger');
 
@@ -57,6 +57,9 @@ async function handleProfileVerificationPayment(user_id, event) {
   // Activate 3-month subscription — idempotent, safe to call multiple times
   const subscriptionEnd = new Date();
   subscriptionEnd.setMonth(subscriptionEnd.getMonth() + 3);
+  const formattedEnd = subscriptionEnd.toLocaleDateString('en-IN', {
+    day: 'numeric', month: 'short', year: 'numeric',
+  });
 
   await supabase.from('users').update({
     payment_verified:      true,
@@ -70,44 +73,27 @@ async function handleProfileVerificationPayment(user_id, event) {
     return;
   }
 
-  // Only activate if user is in PAYMENT_PENDING — guard against duplicate webhooks
+  // Only proceed if user is still in PAYMENT_PENDING — guard against duplicate webhooks
   if (user.state !== 'PAYMENT_PENDING') {
-    console.log(`Razorpay webhook: user ${user.phone} already in state ${user.state}, skipping activation`);
+    console.log(`Razorpay webhook: user ${user.phone} already in state ${user.state}, skipping`);
     return;
   }
 
-  // Move user into the matching pool
-  const now = new Date().toISOString();
-  const { data: activeUser } = await supabase.from('users').update({
-    state:             'WAITING',
-    is_active:         true,
-    is_matched:        false,
-    search_started_at: now,
-    expires_at:        new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
-    updated_at:        now,
-  }).eq('user_id', user_id).select().single();
+  // Move user to pickup phase — they haven't entered trip locations yet
+  await supabase.from('users').update({
+    state:      'ONBOARDING_PICKUP',
+    updated_at: new Date().toISOString(),
+  }).eq('user_id', user_id);
 
-  if (!activeUser) return;
+  await sendText(
+    user.phone,
+    `✅ *Payment confirmed!* Your AasPass profile is active until *${formattedEnd}* 🎉\n\nNow let's set up your trip!`
+  );
 
-  // Notify user and show matches
-  await sendText(user.phone, `✅ *Payment confirmed!* Your AasPass profile is active for *3 months*.\n\n🔍 Searching for a cab-split partner near you...`);
-
-  const matches = await findMatches(activeUser);
-  await sendMatchResults(activeUser, matches);
-
-  // Notify the top waiting users that a new partner just joined
-  for (const match of matches.slice(0, 5)) {
-    if (match.state !== 'WAITING') continue;
-    try {
-      const { data: fresh } = await supabase.from('users').select('*').eq('user_id', match.user_id).single();
-      if (!fresh || !fresh.is_active || fresh.state !== 'WAITING') continue;
-      const theirMatches = await findMatches(fresh);
-      await sendText(fresh.phone, `🚕 A new cab-split partner just joined nearby!`);
-      await sendMatchResults(fresh, theirMatches);
-    } catch (e) {
-      console.error(`Razorpay webhook: notify error for ${match.phone}:`, e.message);
-    }
-  }
+  await sendLocationRequest(
+    user.phone,
+    `*Step 1 of 2* — Share your *pickup location* 📍\n\nTap the button below, or paste coordinates from Google Maps.`
+  );
 }
 
 // ── GET /razorpay/callback ─────────────────────────────────────────────────────

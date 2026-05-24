@@ -24,7 +24,7 @@ const LOCATION_STATES = new Set([
 
 // States where the user's text IS free-form data input, not a command.
 // e.g. typing their name or rating feedback — bypass LLM entirely.
-const FREE_TEXT_STATES = new Set(['ONBOARDING_NAME', 'EDITING_NAME', 'RATING_FEEDBACK']);
+const FREE_TEXT_STATES = new Set(['ONBOARDING_NAME', 'EDITING_NAME', 'RATING_FEEDBACK', 'PROFILE_EDIT_NAME']);
 
 // Exact-match keywords (UPPERCASED) that the state switch already handles directly.
 // Text matching these goes straight to the switch — no LLM needed.
@@ -216,6 +216,19 @@ async function sendPreferredGenderPrompt(phone) {
   await setState(phone, 'ONBOARDING_PREFERRED_GENDER');
 }
 
+async function sendPreferredGenderPromptForProfileEdit(phone) {
+  await sendButtons(
+    phone,
+    `Who would you prefer to share a cab with?`,
+    [
+      { id: 'PREF_ANY', title: '🤝 Anyone'     },
+      { id: 'PREF_F',   title: '👩 Only Female' },
+      { id: 'PREF_M',   title: '👨 Only Male'   },
+    ]
+  );
+  await setState(phone, 'PROFILE_EDIT_PREF');
+}
+
 // ── onboarding: location ─────────────────────────────────────────────────────
 
 async function sendPickupPrompt(phone, isReturning = false) {
@@ -235,6 +248,68 @@ async function sendDropPrompt(phone, pickupLabel) {
     `📍 *Pickup:* ${pickupLabel}\n\n*Step 2 of 2* — Where should we drop you? 🎯\n\nTap the button to pick your destination, or paste coordinates from Google Maps.`
   );
   await setState(phone, 'ONBOARDING_DROP');
+}
+
+// ── welcome back screen ───────────────────────────────────────────────────────
+
+async function sendWelcomeBack(phone, user) {
+  const endDate = user.subscription_end_date
+    ? new Date(user.subscription_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null;
+  await sendButtons(
+    phone,
+    `Welcome back, *${user.name}*! ✈️\n\n` +
+    (endDate ? `📅 Subscription active until *${endDate}*\n\n` : '') +
+    `What would you like to do?`,
+    [
+      { id: 'FIND_PARTNER', title: '🔍 Find a Partner' },
+      { id: 'VIEW_PROFILE', title: '👤 My Profile'     },
+    ]
+  );
+  await setState(phone, 'HOME');
+}
+
+// ── profile view ──────────────────────────────────────────────────────────────
+
+async function sendProfileView(phone, user) {
+  const endDate = user.subscription_end_date
+    ? new Date(user.subscription_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null;
+  const subStatus = isSubscriptionActive(user)
+    ? `✅ Active until ${endDate}`
+    : `❌ Inactive`;
+
+  await sendButtons(
+    phone,
+    `*Your Profile* 👤\n\n` +
+    `👤 Name: ${user.name || 'Not set'}\n` +
+    `🧬 Gender: ${genderLabel(user.gender)}\n` +
+    `🤝 Prefers: ${prefLabel(user.preferred_gender)}\n` +
+    `📅 Subscription: ${subStatus}`,
+    [
+      { id: 'EDIT_PROFILE', title: '✏️ Edit Profile' },
+      { id: 'BACK_TO_HOME', title: '⬅️ Back'         },
+    ]
+  );
+  await setState(phone, 'PROFILE_VIEW');
+}
+
+// ── profile edit menu (name/gender/pref only — no locations) ─────────────────
+
+async function sendEditProfileMenu(phone) {
+  await sendList(
+    phone,
+    `Which detail would you like to update?`,
+    'Choose Field',
+    [{
+      title: 'Edit Profile',
+      rows: [
+        { id: 'PEDIT_NAME',   title: '👤 Name',             description: 'Change your display name'   },
+        { id: 'PEDIT_GENDER', title: '🧬 Gender',           description: 'Update your gender'          },
+        { id: 'PEDIT_PREF',   title: '🤝 Match preference', description: 'Who you want to share with'  },
+      ],
+    }]
+  );
 }
 
 // ── onboarding: confirmation screen ──────────────────────────────────────────
@@ -350,6 +425,21 @@ async function handleMessage(msg, waName) {
     return sendPickupPrompt(phone, true);
   }
 
+  // ── Profile / home buttons ────────────────────────────────────────────────
+  if (buttonId === 'FIND_PARTNER') {
+    return sendPickupPrompt(phone, true);
+  }
+  if (buttonId === 'VIEW_PROFILE') {
+    return sendProfileView(phone, user);
+  }
+  if (buttonId === 'EDIT_PROFILE') {
+    await sendEditProfileMenu(phone);
+    return setState(phone, 'PROFILE_VIEW');
+  }
+  if (buttonId === 'BACK_TO_HOME') {
+    return sendWelcomeBack(phone, user);
+  }
+
   // ── Universal LLM gate ────────────────────────────────────────────────────
   // Fires for EVERY text message that isn't:
   //   • A hard keyword the switch already handles (CANCEL, MATCHES, DONE…)
@@ -417,9 +507,33 @@ async function handleMessage(msg, waName) {
     // ── ONBOARDING: PREFERRED GENDER ─────────────────────────────────────────
     case 'ONBOARDING_PREFERRED_GENDER': {
       const prefMap = { PREF_ANY: 'ANY', PREF_M: 'M', PREF_F: 'F' };
-      const preferred_gender = prefMap[buttonId] || 'ANY'; // default to ANY if skipped
-      await setState(phone, 'ONBOARDING_PICKUP', { preferred_gender });
-      return sendPickupPrompt(phone, false);
+      const preferred_gender = prefMap[buttonId] || 'ANY';
+      const updatedUser = await upsertUser(phone, { preferred_gender, updated_at: new Date().toISOString() });
+
+      // Profile is complete — gate on subscription before location entry
+      if (isSubscriptionActive(updatedUser)) {
+        await setState(phone, 'ONBOARDING_PICKUP');
+        return sendPickupPrompt(phone, false);
+      }
+
+      // New user or expired subscription → require payment first
+      try {
+        const paymentUrl = await createVerificationPaymentLink(updatedUser);
+        await setState(phone, 'PAYMENT_PENDING');
+        return sendCTAButton(
+          phone,
+          `✅ *Profile saved!* Nice to meet you, *${updatedUser.name || 'friend'}*! 🎉\n\n` +
+          `Pay ₹1 to activate your AasPass profile for *3 months* and start finding cab-split partners.\n\n` +
+          `Tap below to pay securely via Razorpay:`,
+          '💳 Pay ₹1 — 3 Month Access',
+          paymentUrl
+        );
+      } catch (e) {
+        logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'createPaymentAfterProfile', message: e.message, phone, userState: 'ONBOARDING_PREFERRED_GENDER', error: e }).catch(() => {});
+        // Fallback — proceed without payment if link generation fails
+        await setState(phone, 'ONBOARDING_PICKUP');
+        return sendPickupPrompt(phone, false);
+      }
     }
 
     // ── ONBOARDING: PICKUP LOCATION ───────────────────────────────────────────
@@ -503,39 +617,17 @@ async function handleMessage(msg, waName) {
 
       await syncProfileFields(phone, user);
 
-      // ── Active subscriber — skip payment, join pool immediately ──
-      if (isSubscriptionActive(user)) {
-        const now = new Date().toISOString();
-        const activeUser = await setState(phone, 'WAITING', {
-          is_active:         true,
-          is_matched:        false,
-          search_started_at: now,
-          expires_at:        new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
-        });
-        await sendText(phone, `✅ *You're in!* Searching for a cab-split partner near you... 🔍`);
-        const matches = await findMatches(activeUser);
-        await sendMatchResults(activeUser, matches);
-        await notifyWaitingUsers(activeUser, matches);
-        return;
-      }
-
-      // ── First-time user — send ₹1 verification payment link ──
-      try {
-        const paymentUrl = await createVerificationPaymentLink(user);
-        await setState(phone, 'PAYMENT_PENDING');
-        await sendCTAButton(
-          phone,
-          `✅ *Details saved!*\n\n` +
-          `One last step — pay ₹1 to activate your AasPass profile for *3 months*.\n` +
-          `After expiry, renew for just ₹1 again.\n\n` +
-          `Tap below to pay securely via Razorpay:`,
-          '💳 Pay ₹1 — 3 Month Access',
-          paymentUrl
-        );
-      } catch (e) {
-        logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'createVerificationPaymentLink', message: e.message, phone, userState: 'ONBOARDING_CONFIRM', error: e }).catch(() => {});
-        await sendText(phone, `Something went wrong generating your payment link 😕\n\nPlease tap *Confirm* again to retry.`);
-      }
+      const now = new Date().toISOString();
+      const activeUser = await setState(phone, 'WAITING', {
+        is_active:         true,
+        is_matched:        false,
+        search_started_at: now,
+        expires_at:        new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
+      });
+      await sendText(phone, `✅ *You're in!* Searching for a cab-split partner near you... 🔍`);
+      const matches = await findMatches(activeUser);
+      await sendMatchResults(activeUser, matches);
+      await notifyWaitingUsers(activeUser, matches);
       return;
     }
 
@@ -816,6 +908,69 @@ async function handleMessage(msg, waName) {
       return sendText(phone, `We've logged your report: *${category}*.\n\nOur team will review it shortly. Thank you for keeping AasPass safe. 🙏`);
     }
 
+    // ── HOME (welcome back screen) ────────────────────────────────────────────
+    case 'HOME': {
+      if (buttonId === 'FIND_PARTNER') return sendPickupPrompt(phone, true);
+      if (buttonId === 'VIEW_PROFILE') return sendProfileView(phone, user);
+      return sendWelcomeBack(phone, user);
+    }
+
+    // ── PROFILE_VIEW ──────────────────────────────────────────────────────────
+    case 'PROFILE_VIEW': {
+      if (buttonId === 'EDIT_PROFILE') {
+        await sendEditProfileMenu(phone);
+        return; // state stays PROFILE_VIEW while edit menu is shown
+      }
+      if (buttonId === 'BACK_TO_HOME') return sendWelcomeBack(phone, user);
+      // Handle edit selections from the profile edit menu
+      if (listId === 'PEDIT_NAME') {
+        await sendText(phone, `What name would you like to use? Reply with your *first name*.`);
+        return setState(phone, 'PROFILE_EDIT_NAME');
+      }
+      if (listId === 'PEDIT_GENDER') {
+        await setState(phone, 'PROFILE_EDIT_GENDER');
+        return sendGenderPrompt(phone);
+      }
+      if (listId === 'PEDIT_PREF') {
+        await setState(phone, 'PROFILE_EDIT_PREF');
+        return sendPreferredGenderPromptForProfileEdit(phone);
+      }
+      return sendProfileView(phone, user);
+    }
+
+    // ── PROFILE EDIT: NAME ────────────────────────────────────────────────────
+    case 'PROFILE_EDIT_NAME': {
+      if (rawText.length < 2 || rawText.length > 30) {
+        return sendText(phone, `Name must be between 2 and 30 characters. Try again.`);
+      }
+      await upsertUser(phone, { name: rawText, updated_at: new Date().toISOString() });
+      const updated = await getUser(phone);
+      await setState(phone, 'PROFILE_VIEW');
+      return sendProfileView(phone, updated);
+    }
+
+    // ── PROFILE EDIT: GENDER ──────────────────────────────────────────────────
+    case 'PROFILE_EDIT_GENDER': {
+      const genderMap = { GENDER_M: 'M', GENDER_F: 'F', GENDER_NB: 'NB', GENDER_NS: 'NS' };
+      const gender = genderMap[listId];
+      if (!gender) return sendGenderPrompt(phone);
+      await upsertUser(phone, { gender, updated_at: new Date().toISOString() });
+      const updated = await getUser(phone);
+      await setState(phone, 'PROFILE_VIEW');
+      return sendProfileView(phone, updated);
+    }
+
+    // ── PROFILE EDIT: PREFERRED GENDER ───────────────────────────────────────
+    case 'PROFILE_EDIT_PREF': {
+      const prefMap = { PREF_ANY: 'ANY', PREF_M: 'M', PREF_F: 'F' };
+      const preferred_gender = prefMap[buttonId];
+      if (!preferred_gender) return sendPreferredGenderPromptForProfileEdit(phone);
+      await upsertUser(phone, { preferred_gender, updated_at: new Date().toISOString() });
+      const updated = await getUser(phone);
+      await setState(phone, 'PROFILE_VIEW');
+      return sendProfileView(phone, updated);
+    }
+
     default:
       // Unknown/corrupted state — restart gracefully
       return startOrResume(phone, user, waName, false);
@@ -904,7 +1059,7 @@ async function startOrResume(phone, user, waName, forceRestart) {
       const paymentUrl = await createVerificationPaymentLink(user);
       return sendCTAButton(
         phone,
-        `Your details are saved 👍 Pay ₹1 to activate your profile for *3 months*:`,
+        `Your profile is saved 👍 Pay ₹1 to activate your AasPass profile for *3 months*:`,
         '💳 Pay ₹1 — 3 Month Access',
         paymentUrl
       );
@@ -919,17 +1074,30 @@ async function startOrResume(phone, user, waName, forceRestart) {
     return sendAlreadyInQueueMsg(phone, user);
   }
 
-  // Returning user with name + gender already set — skip profile steps
+  // Returning user with name + gender already set
   if (!forceRestart && user?.name && user?.gender) {
-    await sendText(phone, `Welcome back, *${user.name}*! 👋\n\nLet's find you a ride-share partner.`);
-
-    // If subscription not active but locations are saved → go to confirmation (triggers payment)
-    // If locations not set yet → fall through to pickup prompt (payment happens at the end)
-    if (!isSubscriptionActive(user) && user?.departure_lat && user?.drop_lat) {
-      return sendConfirmation(phone, user);
+    if (isSubscriptionActive(user)) {
+      // Active subscriber — show welcome back screen with options
+      return sendWelcomeBack(phone, user);
     }
 
-    return sendPickupPrompt(phone, true);
+    // Subscription expired or never paid → payment required
+    try {
+      const paymentUrl = await createVerificationPaymentLink(user);
+      await setState(phone, 'PAYMENT_PENDING');
+      const isRenewal = user.payment_verified; // has paid at least once before
+      return sendCTAButton(
+        phone,
+        isRenewal
+          ? `Welcome back, *${user.name}*! 👋\n\nYour 3-month subscription has expired. Renew for just ₹1 to keep finding cab-split partners:`
+          : `Welcome back, *${user.name}*! 👋\n\nActivate your AasPass profile for *3 months* with a one-time ₹1 payment:`,
+        isRenewal ? '🔄 Renew — ₹1 for 3 Months' : '💳 Pay ₹1 — 3 Month Access',
+        paymentUrl
+      );
+    } catch (e) {
+      logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'startOrResume_renewal', message: e.message, phone, error: e }).catch(() => {});
+      return sendText(phone, `Having trouble with payment right now 😕 Please try again in a moment.`);
+    }
   }
 
   // New user (or forced restart) — full onboarding
