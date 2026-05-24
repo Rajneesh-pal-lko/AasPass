@@ -3,9 +3,11 @@
  *  - Raw coordinates:        "17.2403, 78.4294"
  *  - Google Maps full URL:   .../@17.2403,78.4294,15z
  *  - Google Maps query URL:  ?q=17.2403,78.4294
- *  - Shortened URLs:         goo.gl/maps/xxx  →  follow redirect → extract
- *  - Apple Maps:             maps.apple.com/?q=17.2403,78.4294
+ *  - Google Maps short URL:  maps.app.goo.gl/xxx  →  follow redirect → extract
+ *  - Apple Maps short URL:   maps.apple.com/place/xxx  →  follow redirect → extract
+ *  - Apple Maps direct:      maps.apple.com/?ll=17.24,78.43 or ?q=17.24,78.43
  *  - OLA / HERE / Waze URLs: ?lat=17.24&lon=78.43 variants
+ *  - Any other map URL:      followed via redirect to extract coords or place name
  */
 
 const axios = require('axios');
@@ -59,8 +61,16 @@ function extractFromUrl(url) {
   m = url.match(/[?&]lat=(-?\d+\.?\d+)&lon[g]?=(-?\d+\.?\d+)/);
   if (m) return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };
 
+  // ?ll=lat,lng  (Apple Maps direct share)
+  m = url.match(/[?&]ll=(-?\d+\.?\d+),(-?\d+\.?\d+)/);
+  if (m) return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };
+
   // /place/lat,lng  (Google Maps place links)
   m = url.match(/\/place\/(-?\d+\.?\d+),(-?\d+\.?\d+)/);
+  if (m) return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };
+
+  // /place/Name/lat,lon,zoom  (Apple Maps place links)
+  m = url.match(/\/place\/[^/]+\/(-?\d+\.?\d+),(-?\d+\.?\d+)/);
   if (m) return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };
 
   return null;
@@ -124,9 +134,11 @@ async function parseLocationFromText(text) {
     const direct = extractFromUrl(url);
     if (direct && isValidCoord(direct.lat, direct.lon)) return direct;
 
-    // 2b. Shortened URL — follow redirect and try again
-    const isShort = /goo\.gl|maps\.app\.goo\.gl|bit\.ly|tinyurl\.com|ola\.app|here\.com\/l/i.test(url);
-    if (isShort) {
+    // 2b. Follow redirect for any map-related URL (short links OR full map URLs)
+    //    This covers: goo.gl, maps.app.goo.gl, maps.apple.com, maps.apple, bit.ly,
+    //    tinyurl, ola, here, and any URL that looks like it came from a maps app.
+    const isMapUrl = /goo\.gl|maps\.app\.goo\.gl|maps\.apple|apple\.com\/maps|bit\.ly|tinyurl\.com|ola\.app|here\.com\/l|google\.com\/maps|maps\.google/i.test(url);
+    if (isMapUrl) {
       const resolved = await resolveShortUrl(url);
       if (resolved) {
         // Try coordinates first
@@ -137,6 +149,10 @@ async function parseLocationFromText(text) {
         const placeName = extractPlaceNameFromUrl(resolved);
         if (placeName) return { placeName };
       }
+
+      // Even if redirect failed, try extracting place name from the original URL
+      const directPlace = extractPlaceNameFromUrl(url);
+      if (directPlace) return { placeName: directPlace };
     }
   }
 

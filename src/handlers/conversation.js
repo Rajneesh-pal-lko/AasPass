@@ -410,13 +410,14 @@ async function handleMessage(msg, waName) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.followup) return sendText(phone, intent.followup); // LLM answered a question
         }
         return sendText(phone,
           `Couldn't find that location 😕\n\n` +
           `Share your *pickup location* using one of these:\n` +
           `• 📍 Tap 📎 → Location → share pin (most reliable)\n` +
           `• 🔤 Type a place name — check spelling!\n` +
-          `• 🔗 Paste a Google Maps link\n` +
+          `• 🔗 Paste a Google/Apple Maps link\n` +
           `• 🌐 Type coordinates: *17.2403, 78.4294*`
         );
       }
@@ -436,13 +437,14 @@ async function handleMessage(msg, waName) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.followup) return sendText(phone, intent.followup);
         }
         return sendText(phone,
           `Couldn't find that location 😕\n\n` +
           `Share your *drop destination* using one of these:\n` +
           `• 📍 Tap 📎 → Location → share pin (most reliable)\n` +
           `• 🔤 Type a place name — check spelling!\n` +
-          `• 🔗 Paste a Google Maps link\n` +
+          `• 🔗 Paste a Google/Apple Maps link\n` +
           `• 🌐 Type coordinates: *28.6139, 77.2090*`
         );
       }
@@ -571,8 +573,9 @@ async function handleMessage(msg, waName) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.followup) return sendText(phone, intent.followup);
         }
-        return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+        return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, type a place name, paste a Google/Apple Maps link, or type coordinates.`);
       }
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
@@ -594,8 +597,9 @@ async function handleMessage(msg, waName) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.followup) return sendText(phone, intent.followup);
         }
-        return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+        return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Google/Apple Maps link, or type coordinates.`);
       }
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
