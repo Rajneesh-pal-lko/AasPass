@@ -54,8 +54,15 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 // ── Profile verification payment handler ──────────────────────────────────────
 
 async function handleProfileVerificationPayment(user_id, event) {
-  // Mark payment as verified — idempotent, safe to call multiple times
-  await supabase.from('users').update({ payment_verified: true }).eq('user_id', user_id);
+  // Activate 3-month subscription — idempotent, safe to call multiple times
+  const subscriptionEnd = new Date();
+  subscriptionEnd.setMonth(subscriptionEnd.getMonth() + 3);
+
+  await supabase.from('users').update({
+    payment_verified:      true,
+    subscribed:            true,
+    subscription_end_date: subscriptionEnd.toISOString(),
+  }).eq('user_id', user_id);
 
   const { data: user } = await supabase.from('users').select('*').eq('user_id', user_id).single();
   if (!user) {
@@ -83,7 +90,7 @@ async function handleProfileVerificationPayment(user_id, event) {
   if (!activeUser) return;
 
   // Notify user and show matches
-  await sendText(user.phone, `✅ *Payment confirmed!* You're now in the matching pool.\n\n🔍 Searching for a cab-split partner near you...`);
+  await sendText(user.phone, `✅ *Payment confirmed!* Your AasPass profile is active for *3 months*.\n\n🔍 Searching for a cab-split partner near you...`);
 
   const matches = await findMatches(activeUser);
   await sendMatchResults(activeUser, matches);

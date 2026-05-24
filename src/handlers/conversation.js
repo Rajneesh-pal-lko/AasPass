@@ -40,6 +40,15 @@ const DESTRUCTIVE_ACTIONS = new Set(['CANCEL', 'TRIP_DONE', 'REPORT_ISSUE']);
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+// Returns true when the user has a paid, non-expired subscription
+function isSubscriptionActive(user) {
+  return !!(
+    user?.subscribed &&
+    user?.subscription_end_date &&
+    new Date(user.subscription_end_date) > new Date()
+  );
+}
+
 async function getUser(phone) {
   const { data } = await supabase.from('users').select('*').eq('phone', phone).single();
   return data;
@@ -494,8 +503,8 @@ async function handleMessage(msg, waName) {
 
       await syncProfileFields(phone, user);
 
-      // ── Returning verified user — skip payment, join pool immediately ──
-      if (user.payment_verified) {
+      // ── Active subscriber — skip payment, join pool immediately ──
+      if (isSubscriptionActive(user)) {
         const now = new Date().toISOString();
         const activeUser = await setState(phone, 'WAITING', {
           is_active:         true,
@@ -517,10 +526,10 @@ async function handleMessage(msg, waName) {
         await sendCTAButton(
           phone,
           `✅ *Details saved!*\n\n` +
-          `One last step — a one-time ₹1 verification fee to join the pool.\n` +
-          `This keeps fake profiles out and you'll never be charged again.\n\n` +
+          `One last step — pay ₹1 to activate your AasPass profile for *3 months*.\n` +
+          `After expiry, renew for just ₹1 again.\n\n` +
           `Tap below to pay securely via Razorpay:`,
-          '💳 Pay ₹1 to Join',
+          '💳 Pay ₹1 — 3 Month Access',
           paymentUrl
         );
       } catch (e) {
@@ -544,8 +553,8 @@ async function handleMessage(msg, waName) {
         const paymentUrl = await createVerificationPaymentLink(user);
         return sendCTAButton(
           phone,
-          `Your details are saved 👍 Complete your one-time ₹1 verification to join the pool:`,
-          '💳 Pay ₹1 to Join',
+          `Your details are saved 👍 Pay ₹1 to activate your profile for *3 months*:`,
+          '💳 Pay ₹1 — 3 Month Access',
           paymentUrl
         );
       } catch (e) {
@@ -895,8 +904,8 @@ async function startOrResume(phone, user, waName, forceRestart) {
       const paymentUrl = await createVerificationPaymentLink(user);
       return sendCTAButton(
         phone,
-        `Your details are saved 👍 Complete your one-time ₹1 verification to join the pool:`,
-        '💳 Pay ₹1 to Join',
+        `Your details are saved 👍 Pay ₹1 to activate your profile for *3 months*:`,
+        '💳 Pay ₹1 — 3 Month Access',
         paymentUrl
       );
     } catch (e) {
@@ -913,6 +922,13 @@ async function startOrResume(phone, user, waName, forceRestart) {
   // Returning user with name + gender already set — skip profile steps
   if (!forceRestart && user?.name && user?.gender) {
     await sendText(phone, `Welcome back, *${user.name}*! 👋\n\nLet's find you a ride-share partner.`);
+
+    // If subscription not active but locations are saved → go to confirmation (triggers payment)
+    // If locations not set yet → fall through to pickup prompt (payment happens at the end)
+    if (!isSubscriptionActive(user) && user?.departure_lat && user?.drop_lat) {
+      return sendConfirmation(phone, user);
+    }
+
     return sendPickupPrompt(phone, true);
   }
 
