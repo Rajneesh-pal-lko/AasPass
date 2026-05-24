@@ -10,6 +10,27 @@ const { detectIntent } = require('../services/llm');
 const SEARCH_WINDOW_MS  = 10 * 60 * 1000;
 const RETRY_WINDOW_MS   =  5 * 60 * 1000;
 
+// ── Universal LLM gate config ─────────────────────────────────────────────────
+
+// States where the user's text IS a location query — geocoding handles it first,
+// with LLM as a fallback for commands like "cancel".
+const LOCATION_STATES = new Set([
+  'ONBOARDING_PICKUP', 'ONBOARDING_DROP',
+  'EDITING_PICKUP',    'EDITING_DROP',
+  'POOL_EDIT_PICKUP',  'POOL_EDIT_DROP',
+]);
+
+// States where the user's text IS free-form data input, not a command.
+// e.g. typing their name or rating feedback — bypass LLM entirely.
+const FREE_TEXT_STATES = new Set(['ONBOARDING_NAME', 'EDITING_NAME', 'RATING_FEEDBACK']);
+
+// Exact-match keywords (UPPERCASED) that the state switch already handles directly.
+// Text matching these goes straight to the switch — no LLM needed.
+const HARD_KEYWORDS = new Set([
+  'MATCHES', 'CANCEL', 'EDIT', 'DONE', 'ISSUE', 'BLOCK',
+  'CONFIRM CANCEL', 'BACK', 'SKIP',
+]);
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 async function getUser(phone) {
@@ -273,6 +294,27 @@ async function handleMessage(msg, waName) {
   if (text === 'RESTART' || text === 'START') return startOrResume(phone, user, waName, true);
   if (text === 'HI' || text === '' && state === 'IDLE') return startOrResume(phone, user, waName, false);
 
+  // ── Universal LLM gate ────────────────────────────────────────────────────
+  // Fires for EVERY text message that isn't:
+  //   • A hard keyword the switch already handles (CANCEL, MATCHES, DONE…)
+  //   • A location state (geocoding runs first; LLM fires as fallback inside the case)
+  //   • A free-text capture state (ONBOARDING_NAME, RATING_FEEDBACK…)
+  //
+  // If LLM returns a known action → execute it immediately.
+  // If LLM returns UNKNOWN → fall through to the state switch for a
+  //   context-specific hint (e.g. "please share your pickup pin").
+  if (msgType === 'text' && rawText.length > 0
+      && !LOCATION_STATES.has(state)
+      && !FREE_TEXT_STATES.has(state)
+      && !HARD_KEYWORDS.has(text)) {
+    const intent = await detectIntent(rawText, state);
+    console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
+    if (intent.action !== 'UNKNOWN') {
+      return handleLLMIntent(intent, phone, user, waName, state);
+    }
+    // UNKNOWN → fall through so the state switch can give a context-aware hint
+  }
+
   switch (state) {
 
     // ── IDLE / COMPLETED ──────────────────────────────────────────────────────
@@ -324,6 +366,12 @@ async function handleMessage(msg, waName) {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return; // geocode list sent, waiting for selection
       if (!loc) {
+        // No location found — try LLM for commands like "cancel", "go back"
+        if (msgType === 'text' && rawText.length > 0) {
+          const intent = await detectIntent(rawText, state);
+          console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+        }
         return sendText(phone,
           `Please share your *pickup location* 📍\n\n` +
           `• Tap 📎 → Location → search or use current location\n` +
@@ -344,6 +392,11 @@ async function handleMessage(msg, waName) {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
       if (!loc) {
+        if (msgType === 'text' && rawText.length > 0) {
+          const intent = await detectIntent(rawText, state);
+          console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+        }
         return sendText(phone,
           `Please share your *drop destination* 📍\n\n` +
           `• Tap 📎 → Location → search any city\n` +
@@ -434,7 +487,14 @@ async function handleMessage(msg, waName) {
     case 'EDITING_PICKUP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
-      if (!loc) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+      if (!loc) {
+        if (msgType === 'text' && rawText.length > 0) {
+          const intent = await detectIntent(rawText, state);
+          console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+        }
+        return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+      }
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
         departure_lat: loc.lat, departure_long: loc.lon, pickup_label,
@@ -446,7 +506,14 @@ async function handleMessage(msg, waName) {
     case 'EDITING_DROP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
-      if (!loc) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+      if (!loc) {
+        if (msgType === 'text' && rawText.length > 0) {
+          const intent = await detectIntent(rawText, state);
+          console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+        }
+        return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+      }
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
         drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
@@ -458,7 +525,14 @@ async function handleMessage(msg, waName) {
     case 'POOL_EDIT_PICKUP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
-      if (!loc) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+      if (!loc) {
+        if (msgType === 'text' && rawText.length > 0) {
+          const intent = await detectIntent(rawText, state);
+          console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+        }
+        return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+      }
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
         departure_lat: loc.lat, departure_long: loc.lon, pickup_label,
@@ -474,7 +548,14 @@ async function handleMessage(msg, waName) {
     case 'POOL_EDIT_DROP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
-      if (!loc) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+      if (!loc) {
+        if (msgType === 'text' && rawText.length > 0) {
+          const intent = await detectIntent(rawText, state);
+          console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+        }
+        return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
+      }
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
         drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
@@ -511,12 +592,6 @@ async function handleMessage(msg, waName) {
       if (listId.startsWith('match_')) {
         return handleMatchRequest(phone, listId.replace('match_', ''), user);
       }
-      // LLM fallback for ambiguous text ("stop searching", "any luck?", etc.)
-      if (msgType === 'text' && rawText.length > 0) {
-        const intent = await detectIntent(rawText, state);
-        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
-        return handleLLMIntent(intent, phone, user, waName, state);
-      }
       return sendText(phone, `You're in the matching pool! 🔍\n\nType *MATCHES* to view matches, *EDIT* to update your pickup/drop, or *CANCEL* to withdraw.`);
     }
 
@@ -536,11 +611,6 @@ async function handleMessage(msg, waName) {
         await setState(phone, 'IDLE', { is_active: false });
         return sendText(phone, `No problem! Send "hi" whenever you're ready to search again. ✈️`);
       }
-      if (msgType === 'text' && rawText.length > 0) {
-        const intent = await detectIntent(rawText, state);
-        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
-        return handleLLMIntent(intent, phone, user, waName, state);
-      }
       return sendText(phone, `Please tap *Yes* or *No* on the message above to continue.`);
     }
 
@@ -558,11 +628,6 @@ async function handleMessage(msg, waName) {
         await setState(phone, 'POOL_EDIT_DROP');
         return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
       }
-      if (msgType === 'text' && rawText.length > 0) {
-        const intent = await detectIntent(rawText, state);
-        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
-        return handleLLMIntent(intent, phone, user, waName, state);
-      }
       return sendText(phone, `Your request is pending. They'll respond shortly.\n\nType *CANCEL* to withdraw, or *EDIT* to update your trip details.`);
     }
 
@@ -570,11 +635,6 @@ async function handleMessage(msg, waName) {
     case 'MATCH_RECEIVED': {
       if (buttonId.startsWith('ACCEPT_'))  return handleAcceptMatch(phone, buttonId.replace('ACCEPT_', ''),  user);
       if (buttonId.startsWith('DECLINE_')) return handleDeclineMatch(phone, buttonId.replace('DECLINE_', ''), user);
-      if (msgType === 'text' && rawText.length > 0) {
-        const intent = await detectIntent(rawText, state);
-        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
-        return handleLLMIntent(intent, phone, user, waName, state);
-      }
       return sendText(phone, `Please tap *Accept* or *Decline* on the request above.`);
     }
 
@@ -589,11 +649,6 @@ async function handleMessage(msg, waName) {
       if (text === 'DONE' || buttonId === 'TRIP_DONE')  return handleTripDone(phone, user);
       if (text === 'ISSUE' || buttonId === 'TRIP_ISSUE') return sendIssueMenu(phone);
 
-      if (msgType === 'text' && rawText.length > 0) {
-        const intent = await detectIntent(rawText, state);
-        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
-        return handleLLMIntent(intent, phone, user, waName, state);
-      }
       return sendText(phone, `You're matched! 🎉\n\nTap *Share Contact* to exchange numbers, *DONE* when complete, or *ISSUE* to report a problem.\nType *CANCEL* to cancel this match.`);
     }
 
@@ -640,17 +695,9 @@ async function handleMessage(msg, waName) {
       return sendText(phone, `We've logged your report: *${category}*.\n\nOur team will review it shortly. Thank you for keeping AasPass safe. 🙏`);
     }
 
-    default: {
-      // ── LLM fallback: interpret ambiguous text messages ─────────────────────
-      // Only fires for text input that didn't match any button/list/command above.
-      // Buttons, locations, list taps are already handled — they never reach here.
-      if (msgType === 'text' && rawText.length > 0) {
-        const intent = await detectIntent(rawText, state);
-        console.log(`🤖 LLM intent [${state}] "${rawText}" → ${intent.action}`);
-        return handleLLMIntent(intent, phone, user, waName, state);
-      }
+    default:
+      // Unknown/corrupted state — restart gracefully
       return startOrResume(phone, user, waName, false);
-    }
   }
 }
 
