@@ -83,4 +83,36 @@ primeCache([
   { lat: 12.9941, lon: 80.1709, label: 'Chennai Airport (MAA)' },
 ]);
 
-module.exports = { reverseGeocode };
+/**
+ * Forward-geocode a place name / address into up to `limit` candidate results.
+ * Used when a user types a place name instead of sharing a pin.
+ *
+ * @param {string} query  - free-text place name, e.g. "Mantri Celestia Hyderabad"
+ * @param {number} limit  - max results (1–5)
+ * @returns {Promise<Array<{ lat: number, lon: number, label: string }>>}
+ */
+async function forwardGeocode(query, limit = 5) {
+  const apiKey = process.env.OPENCAGE_API_KEY;
+  if (!apiKey || !query?.trim()) return [];
+
+  try {
+    const q   = encodeURIComponent(query.trim());
+    const url = `https://api.opencagedata.com/geocode/v1/json` +
+                `?q=${q}&key=${apiKey}&limit=${limit}&no_annotations=1&language=en&countrycode=in`;
+
+    const res  = await axios.get(url, { timeout: 5000 });
+    const hits = res.data?.results || [];
+
+    return hits.map(r => ({
+      lat:   r.geometry.lat,
+      lon:   r.geometry.lng,
+      label: r.formatted || `${r.geometry.lat}, ${r.geometry.lng}`,
+    }));
+
+  } catch (err) {
+    console.error('Forward geocoding error:', err.message);
+    return [];
+  }
+}
+
+module.exports = { reverseGeocode, forwardGeocode };

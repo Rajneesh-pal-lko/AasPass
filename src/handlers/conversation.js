@@ -2,7 +2,7 @@ const supabase = require('../config/supabase');
 const { sendText, sendButtons, sendList, sendCTAButton, sendLocationRequest } = require('../services/whatsapp');
 const { getDistanceKm } = require('../utils/haversine');
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
-const { reverseGeocode } = require('../services/geocoding');
+const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
 const { parseLocationFromText, isValidCoord } = require('../utils/locationParser');
 const { detectIntent } = require('../services/llm');
 
@@ -61,6 +61,56 @@ async function resolveLocation(locationLat, locationLon, rawText) {
     const parsed = await parseLocationFromText(rawText);
     if (parsed) return { ...parsed, fromText: true };
   }
+  return null;
+}
+
+// Tries to resolve a location from 4 sources (in priority order):
+//   1. User tapped a geocode result from a previous search list
+//   2. WhatsApp location pin / Maps link / raw coordinates
+//   3. Free-text place name → forward geocode → show selection list → 'SEARCHING'
+//   4. Nothing found → returns null (caller should show error)
+//
+// Returns: { lat, lon } | 'SEARCHING' | null
+async function resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId) {
+  // ── 1. User selected from our forward-geocode list ──
+  if (listId?.startsWith('loc_')) {
+    // ID format: "loc_{lat}_{lon}"  (negative values keep their minus sign)
+    const parts = listId.slice(4).split('_');   // strip "loc_", then split by "_"
+    // Handle negative lat/lon: "-17.423658_78.340644" → ["-17.423658", "78.340644"]
+    const lat = parseFloat(parts[0]);
+    const lon = parseFloat(parts[1]);
+    if (isValidCoord(lat, lon)) return { lat, lon };
+  }
+
+  // ── 2. Pin / Maps link / raw coordinates ──
+  const loc = await resolveLocation(locationLat, locationLon, rawText);
+  if (loc) return loc;
+
+  // ── 3. Free-text place name → forward geocode ──
+  if (msgType === 'text' && rawText.length >= 3) {
+    const hits = await forwardGeocode(rawText, 5);
+    if (hits.length > 0) {
+      const rows = hits.map(h => {
+        // Title: first segment before comma, capped at 24 chars
+        const title = h.label.split(',')[0].trim().slice(0, 24);
+        // Description: full address, capped at 72 chars
+        const description = h.label.slice(0, 72);
+        // Encode coords in the row ID so we can recover them on selection
+        const id = `loc_${h.lat.toFixed(6)}_${h.lon.toFixed(6)}`;
+        return { id, title, description };
+      });
+
+      await sendList(
+        phone,
+        `📍 Found *${hits.length}* result${hits.length > 1 ? 's' : ''} for "*${rawText.slice(0, 40)}*":\n\nSelect the correct location, or share a 📎 pin directly.`,
+        'Choose Location',
+        [{ title: 'Search Results', rows }]
+      );
+      return 'SEARCHING'; // list shown — wait for the user's list_reply
+    }
+  }
+
+  // ── 4. Nothing worked ──
   return null;
 }
 
@@ -271,12 +321,14 @@ async function handleMessage(msg, waName) {
 
     // ── ONBOARDING: PICKUP LOCATION ───────────────────────────────────────────
     case 'ONBOARDING_PICKUP': {
-      const loc = await resolveLocation(locationLat, locationLon, rawText);
+      const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
+      if (loc === 'SEARCHING') return; // geocode list sent, waiting for selection
       if (!loc) {
         return sendText(phone,
           `Please share your *pickup location* 📍\n\n` +
           `• Tap 📎 → Location → search or use current location\n` +
-          `• Or paste a Google Maps / Apple Maps link\n` +
+          `• Or type a place name: *Mantri Celestia Hyderabad*\n` +
+          `• Or paste a Google Maps link\n` +
           `• Or type coordinates: *17.2403, 78.4294*`
         );
       }
@@ -289,12 +341,14 @@ async function handleMessage(msg, waName) {
 
     // ── ONBOARDING: DROP LOCATION ─────────────────────────────────────────────
     case 'ONBOARDING_DROP': {
-      const loc = await resolveLocation(locationLat, locationLon, rawText);
+      const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
+      if (loc === 'SEARCHING') return;
       if (!loc) {
         return sendText(phone,
           `Please share your *drop destination* 📍\n\n` +
           `• Tap 📎 → Location → search any city\n` +
-          `• Or paste a Google Maps / Apple Maps link\n` +
+          `• Or type a place name: *Connaught Place Delhi*\n` +
+          `• Or paste a Google Maps link\n` +
           `• Or type coordinates: *28.6139, 77.2090*`
         );
       }
@@ -378,8 +432,9 @@ async function handleMessage(msg, waName) {
 
     // ── EDITING: PICKUP ───────────────────────────────────────────────────────
     case 'EDITING_PICKUP': {
-      const loc = await resolveLocation(locationLat, locationLon, rawText);
-      if (!loc) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, paste a Maps link, or type coordinates.`);
+      const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
+      if (loc === 'SEARCHING') return;
+      if (!loc) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
         departure_lat: loc.lat, departure_long: loc.lon, pickup_label,
@@ -389,8 +444,9 @@ async function handleMessage(msg, waName) {
 
     // ── EDITING: DROP ─────────────────────────────────────────────────────────
     case 'EDITING_DROP': {
-      const loc = await resolveLocation(locationLat, locationLon, rawText);
-      if (!loc) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, paste a Maps link, or type coordinates.`);
+      const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
+      if (loc === 'SEARCHING') return;
+      if (!loc) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
         drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
@@ -400,8 +456,9 @@ async function handleMessage(msg, waName) {
 
     // ── POOL EDIT: PICKUP (while in WAITING pool) ─────────────────────────────
     case 'POOL_EDIT_PICKUP': {
-      const loc = await resolveLocation(locationLat, locationLon, rawText);
-      if (!loc) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, paste a Maps link, or type coordinates.`);
+      const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
+      if (loc === 'SEARCHING') return;
+      if (!loc) return sendText(phone, `Share your new *pickup location* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
         departure_lat: loc.lat, departure_long: loc.lon, pickup_label,
@@ -415,8 +472,9 @@ async function handleMessage(msg, waName) {
 
     // ── POOL EDIT: DROP (while in WAITING pool) ───────────────────────────────
     case 'POOL_EDIT_DROP': {
-      const loc = await resolveLocation(locationLat, locationLon, rawText);
-      if (!loc) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, paste a Maps link, or type coordinates.`);
+      const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
+      if (loc === 'SEARCHING') return;
+      if (!loc) return sendText(phone, `Share your new *drop destination* 📍\n\nTap 📎 → Location, type a place name, paste a Maps link, or type coordinates.`);
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
         drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
