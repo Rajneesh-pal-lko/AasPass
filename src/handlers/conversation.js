@@ -85,7 +85,7 @@ async function resolveLocation(locationLat, locationLon, rawText) {
   }
   if (rawText) {
     const parsed = await parseLocationFromText(rawText);
-    if (parsed) return { ...parsed, fromText: true };
+    if (parsed) return parsed.appleShortLink ? parsed : { ...parsed, fromText: true };
   }
   return null;
 }
@@ -110,6 +110,7 @@ async function resolveOrSearch(phone, msgType, locationLat, locationLon, rawText
 
   // ── 2. Pin / Maps link / raw coordinates ──
   const loc = await resolveLocation(locationLat, locationLon, rawText);
+  if (loc?.appleShortLink) return 'APPLE_SHORT_LINK'; // caller shows specific message
   if (loc?.lat !== undefined) return loc; // direct coordinates found
 
   // ── 3. Free-text place name → forward geocode ──
@@ -403,7 +404,14 @@ async function handleMessage(msg, waName) {
     // ── ONBOARDING: PICKUP LOCATION ───────────────────────────────────────────
     case 'ONBOARDING_PICKUP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
-      if (loc === 'SEARCHING') return; // geocode list sent, waiting for selection
+      if (loc === 'SEARCHING') return;
+      if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
+        `Apple Maps short links can't be read from our servers 😕\n\n` +
+        `Please share your location using one of these instead:\n` +
+        `• 📍 Tap 📎 → Location → share pin *(easiest)*\n` +
+        `• 🔗 Open Apple Maps → Share → *Copy Link* (use the full maps.apple.com link)\n` +
+        `• 🔗 Or paste a *Google Maps* link`
+      );
       if (!loc) {
         // No location found — try LLM for commands like "cancel", "go back"
         if (msgType === 'text' && rawText.length > 0) {
@@ -432,6 +440,9 @@ async function handleMessage(msg, waName) {
     case 'ONBOARDING_DROP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
+      if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+      );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
@@ -530,6 +541,9 @@ async function handleMessage(msg, waName) {
     case 'EDITING_PICKUP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
+      if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+      );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
@@ -549,6 +563,9 @@ async function handleMessage(msg, waName) {
     case 'EDITING_DROP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
+      if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+      );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
@@ -568,6 +585,9 @@ async function handleMessage(msg, waName) {
     case 'POOL_EDIT_PICKUP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
+      if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+      );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
@@ -592,6 +612,9 @@ async function handleMessage(msg, waName) {
     case 'POOL_EDIT_DROP': {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
+      if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+      );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);

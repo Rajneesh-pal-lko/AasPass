@@ -80,7 +80,15 @@ function extractFromUrl(url) {
 // Uses a mobile User-Agent so Google Maps short links resolve correctly
 // (maps.app.goo.gl ?g_st=ic is the iOS share format — same destination server-side)
 
+// Domains that use Apple's private .apple TLD — they only resolve inside Apple's
+// own DNS network. Any HTTP request from an external server will timeout.
+const APPLE_PRIVATE_TLD = /^https?:\/\/[a-z.]*\.apple\//i;
+
 async function resolveShortUrl(url) {
+  // Apple private TLD (maps.apple, *.apple) — unreachable from non-Apple servers.
+  // Attempting an HTTP request wastes 4-8 seconds. Skip immediately.
+  if (APPLE_PRIVATE_TLD.test(url)) return null;
+
   // Strip tracking params that can confuse the redirect chain
   const cleanUrl = url.split('?')[0];
 
@@ -133,6 +141,11 @@ async function parseLocationFromText(text) {
     // 2a. Try direct extraction (no HTTP needed)
     const direct = extractFromUrl(url);
     if (direct && isValidCoord(direct.lat, direct.lon)) return direct;
+
+    // 2b-special. Apple private-TLD short links (maps.apple/p/...) can ONLY be
+    //   opened on an iOS device — they will not resolve from a server. Signal
+    //   this to the caller so it can show a specific message.
+    if (APPLE_PRIVATE_TLD.test(url)) return { appleShortLink: true };
 
     // 2b. Follow redirect for any map-related URL (short links OR full map URLs)
     //    This covers: goo.gl, maps.app.goo.gl, maps.apple.com, maps.apple, bit.ly,
