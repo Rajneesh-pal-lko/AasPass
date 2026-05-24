@@ -27,10 +27,12 @@ app.use(session({
 const webhookRouter  = require('./src/routes/webhook');
 const razorpayRouter = require('./src/routes/razorpay');
 const adminRouter    = require('./src/routes/admin');
+const pickerRouter   = require('./src/routes/picker');
 
 app.use('/webhook',  webhookRouter);
 app.use('/razorpay', razorpayRouter);
 app.use('/admin',    adminRouter);
+app.use('/pick',     pickerRouter);
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'AasPass' }));

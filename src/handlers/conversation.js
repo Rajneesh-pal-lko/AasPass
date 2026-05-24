@@ -5,6 +5,7 @@ const { findMatches, sendMatchResults, sendMatchRequest } = require('../services
 const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
 const { parseLocationFromText, isValidCoord } = require('../utils/locationParser');
 const { detectIntent } = require('../services/llm');
+const { generatePickerToken } = require('../utils/pickerToken');
 
 // Search window: 10 min initial, 5 min extension
 const SEARCH_WINDOW_MS  = 10 * 60 * 1000;
@@ -76,6 +77,25 @@ function prefLabel(p) {
   if (p === 'M')   return 'Only Male';
   if (p === 'F')   return 'Only Female';
   return p || 'Anyone';
+}
+
+// Send a Mappls map picker CTA button for drop/pickup location states.
+// The picker page lets users search or drag a pin to any location worldwide.
+// Only sent when SERVER_URL + MAPPLS_API_KEY are configured.
+async function sendPickerCTA(phone, label = 'drop location') {
+  const serverUrl = process.env.SERVER_URL;
+  const mapKey    = process.env.MAPPLS_API_KEY;
+  if (!serverUrl || !mapKey) return; // silently skip in dev if not configured
+
+  const token     = generatePickerToken(phone);
+  const pickerUrl = `${serverUrl}/pick?t=${token}&label=${encodeURIComponent(label)}`;
+
+  await sendCTAButton(
+    phone,
+    `Or pick any location on the map 🗺️`,
+    '📍 Open Map Picker',
+    pickerUrl
+  ).catch(e => console.error('sendPickerCTA error:', e.message));
 }
 
 // Resolve lat/lon from WhatsApp location message OR pasted text (Maps link / coords)
@@ -221,8 +241,12 @@ async function sendPickupPrompt(phone, isReturning = false) {
 async function sendDropPrompt(phone, pickupLabel) {
   await sendText(
     phone,
-    `📍 *Pickup:* ${pickupLabel}\n\n*Step 2 of 2* — Share your *drop destination* 📍\n\nTap 📎 → Location → search for your destination (any city).`
+    `📍 *Pickup:* ${pickupLabel}\n\n*Step 2 of 2* — Where should we drop you? 🎯\n\n` +
+    `• ✏️ *Type* your destination name below\n` +
+    `• 🗺️ *Use the map picker* button below (recommended)\n` +
+    `• 📍 Tap 📎 → Location → share a pin`
   );
+  await sendPickerCTA(phone, 'drop location');
   await setState(phone, 'ONBOARDING_DROP');
 }
 
@@ -487,7 +511,13 @@ async function handleMessage(msg, waName) {
       }
       if (listId === 'EDIT_DROP') {
         await setState(phone, 'EDITING_DROP');
-        return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
+        await sendText(phone,
+          `Where's your new drop destination? 🎯\n\n` +
+          `• ✏️ Type the place name below\n` +
+          `• 🗺️ Use the map picker button below\n` +
+          `• 📍 Tap 📎 → Location → share a pin`
+        );
+        return sendPickerCTA(phone, 'drop destination');
       }
 
       if (buttonId === 'CONFIRM_NO')   return startOrResume(phone, user, waName, true);
@@ -654,7 +684,13 @@ async function handleMessage(msg, waName) {
       if (buttonId === 'POOL_EDIT_DROP') {
         await cancelPendingRequestsFrom(user);
         await setState(phone, 'POOL_EDIT_DROP');
-        return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
+        await sendText(phone,
+          `Where's your new drop destination? 🎯\n\n` +
+          `• ✏️ Type the place name below\n` +
+          `• 🗺️ Use the map picker button below\n` +
+          `• 📍 Tap 📎 → Location → share a pin`
+        );
+        return sendPickerCTA(phone, 'drop destination');
       }
 
       if (listId.startsWith('match_')) {
@@ -694,7 +730,13 @@ async function handleMessage(msg, waName) {
       if (buttonId === 'POOL_EDIT_DROP') {
         await handleCancelSentRequest(phone, user);
         await setState(phone, 'POOL_EDIT_DROP');
-        return sendLocationRequest(phone, `Share your new *drop destination* 📍`);
+        await sendText(phone,
+          `Where's your new drop destination? 🎯\n\n` +
+          `• ✏️ Type the place name below\n` +
+          `• 🗺️ Use the map picker button below\n` +
+          `• 📍 Tap 📎 → Location → share a pin`
+        );
+        return sendPickerCTA(phone, 'drop destination');
       }
       return sendText(phone, `Your request is pending. They'll respond shortly.\n\nType *CANCEL* to withdraw, or *EDIT* to update your trip details.`);
     }
@@ -1269,12 +1311,13 @@ async function handleLLMIntent(intent, phone, user, waName, state) {
     case 'EDIT_DROP': {
       await cancelPendingRequestsFrom(user);
       await setState(phone, 'POOL_EDIT_DROP');
-      return sendText(phone,
-        `Share your new *drop destination* 📍\n\n` +
-        `• Tap 📎 → Location → search any city\n` +
-        `• Or paste a Google Maps / Apple Maps link\n` +
-        `• Or type coordinates: *28.6139, 77.2090*`
+      await sendText(phone,
+        `Where's your new drop destination? 🎯\n\n` +
+        `• ✏️ Type the place name below\n` +
+        `• 🗺️ Use the map picker button below\n` +
+        `• 📍 Tap 📎 → Location → share a pin`
       );
+      return sendPickerCTA(phone, 'drop destination');
     }
 
     case 'STATUS':  return sendStatus(phone);
