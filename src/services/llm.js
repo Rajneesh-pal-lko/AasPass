@@ -153,27 +153,44 @@ async function detectIntent(message, state) {
   const systemPrompt = buildSystemPrompt(state);
   const userMessage  = `Message: "${message.slice(0, 300)}"`;
 
-  try {
-    const raw = PROVIDER === 'anthropic'
-      ? await callAnthropic(systemPrompt, userMessage)
-      : await callOpenAI(systemPrompt, userMessage);
+  // Retry up to 2 times on 429 (rate limit) with exponential backoff
+  const MAX_RETRIES  = 2;
+  const RETRY_DELAYS = [1000, 3000]; // 1s, then 3s
 
-    // Extract JSON even if model adds surrounding text
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON in response');
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const raw = PROVIDER === 'anthropic'
+        ? await callAnthropic(systemPrompt, userMessage)
+        : await callOpenAI(systemPrompt, userMessage);
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    const validActions = [...(STATE_ACTIONS[state] || []), 'UNKNOWN'];
+      // Extract JSON even if model adds surrounding text
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON in response');
 
-    return {
-      action:   validActions.includes(parsed.action) ? parsed.action : 'UNKNOWN',
-      followup: parsed.followup || null,
-    };
+      const parsed = JSON.parse(jsonMatch[0]);
+      const validActions = [...(STATE_ACTIONS[state] || []), 'UNKNOWN'];
 
-  } catch (e) {
-    console.error('LLM detectIntent error:', e.message);
-    return { action: 'UNKNOWN', followup: null };
+      return {
+        action:   validActions.includes(parsed.action) ? parsed.action : 'UNKNOWN',
+        followup: parsed.followup || null,
+      };
+
+    } catch (e) {
+      const is429 = e.response?.status === 429 || e.message?.includes('429');
+
+      if (is429 && attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAYS[attempt];
+        console.warn(`LLM rate limited (429) — retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      console.error('LLM detectIntent error:', e.message);
+      return { action: 'UNKNOWN', followup: null };
+    }
   }
+
+  return { action: 'UNKNOWN', followup: null };
 }
 
 module.exports = { detectIntent };
