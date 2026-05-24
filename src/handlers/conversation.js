@@ -525,7 +525,7 @@ async function handleMessage(msg, waName) {
           `✅ *Profile saved!* Nice to meet you, *${updatedUser.name || 'friend'}*! 🎉\n\n` +
           `Pay ₹1 to activate your AasPass profile for *3 months* and start finding cab-split partners.\n\n` +
           `Tap below to pay securely via Razorpay:`,
-          '💳 Pay ₹1 — 3 Month Access',
+          'Pay ₹1 — 3 Months',
           paymentUrl
         );
       } catch (e) {
@@ -646,7 +646,7 @@ async function handleMessage(msg, waName) {
         return sendCTAButton(
           phone,
           `Your details are saved 👍 Pay ₹1 to activate your profile for *3 months*:`,
-          '💳 Pay ₹1 — 3 Month Access',
+          'Pay ₹1 — 3 Months',
           paymentUrl
         );
       } catch (e) {
@@ -1060,7 +1060,7 @@ async function startOrResume(phone, user, waName, forceRestart) {
       return sendCTAButton(
         phone,
         `Your profile is saved 👍 Pay ₹1 to activate your AasPass profile for *3 months*:`,
-        '💳 Pay ₹1 — 3 Month Access',
+        'Pay ₹1 — 3 Months',
         paymentUrl
       );
     } catch (e) {
@@ -1091,7 +1091,7 @@ async function startOrResume(phone, user, waName, forceRestart) {
         isRenewal
           ? `Welcome back, *${user.name}*! 👋\n\nYour 3-month subscription has expired. Renew for just ₹1 to keep finding cab-split partners:`
           : `Welcome back, *${user.name}*! 👋\n\nActivate your AasPass profile for *3 months* with a one-time ₹1 payment:`,
-        isRenewal ? '🔄 Renew — ₹1 for 3 Months' : '💳 Pay ₹1 — 3 Month Access',
+        isRenewal ? 'Renew for ₹1' : 'Pay ₹1 — 3 Months',
         paymentUrl
       );
     } catch (e) {
@@ -1315,7 +1315,7 @@ async function revealContact(phone, partnerUser, selfUser) {
   await sendCTAButton(
     phone,
     `💬 A message is ready for you to send:`,
-    '📱 Message on WhatsApp',
+    'Message on WhatsApp',
     waLink
   ).catch(e => logError({
     severity: 'WARNING', type: 'WHATSAPP', operation: 'revealContact_cta',
