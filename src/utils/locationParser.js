@@ -52,25 +52,38 @@ function extractFromUrl(url) {
 }
 
 // ── follow a short URL and return the final destination ───────────────────────
+// Uses a mobile User-Agent so Google Maps short links resolve correctly
+// (maps.app.goo.gl ?g_st=ic is the iOS share format — same destination server-side)
 
 async function resolveShortUrl(url) {
-  try {
-    const res = await axios.get(url, {
-      maxRedirects: 5,
-      timeout:      5000,
-      validateStatus: () => true,   // don't throw on non-2xx
-      // Prevent actually downloading a full page
-      responseType: 'stream',
-    });
-    res.data.destroy?.();           // immediately close the stream
-    // axios stores the final URL after redirects here
-    return res.request?.res?.responseUrl
-        || res.config?.url
-        || null;
-  } catch (e) {
-    console.error('resolveShortUrl error:', e.message);
-    return null;
+  // Strip tracking params that can confuse the redirect chain
+  const cleanUrl = url.split('?')[0];
+
+  // Try HEAD first (lightweight — no body download)
+  for (const method of ['head', 'get']) {
+    try {
+      const res = await axios[method](cleanUrl, {
+        maxRedirects:   10,
+        timeout:        4000,
+        validateStatus: () => true,
+        headers: {
+          // Mobile UA makes maps.app.goo.gl resolve to standard Maps URL with @lat,lon
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+        },
+        // Don't use responseType:'stream' — it breaks redirect URL tracking in Node.js
+      });
+
+      const finalUrl = res.request?.res?.responseUrl   // Node http.IncomingMessage
+                    || res.request?.responseURL         // Browser-style fallback
+                    || null;
+
+      if (finalUrl && finalUrl !== cleanUrl) return finalUrl;
+    } catch (e) {
+      // HEAD failed → try GET on next loop iteration
+      if (method === 'get') console.error('resolveShortUrl error:', e.message);
+    }
   }
+  return null;
 }
 
 // ── main exported function ────────────────────────────────────────────────────
