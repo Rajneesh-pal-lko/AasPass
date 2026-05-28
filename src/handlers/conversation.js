@@ -1,7 +1,8 @@
 const supabase = require('../config/supabase');
 const { sendText, sendButtons, sendList, sendLocationRequest, sendCTAButton } = require('../services/whatsapp');
 const { logError } = require('../utils/errorLogger');
-const { createVerificationPaymentLink } = require('../services/razorpay');
+// Payment disabled — import kept for future use
+// const { createVerificationPaymentLink } = require('../services/razorpay');
 const { getDistanceKm } = require('../utils/haversine');
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
@@ -40,13 +41,9 @@ const DESTRUCTIVE_ACTIONS = new Set(['CANCEL', 'TRIP_DONE', 'REPORT_ISSUE']);
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// Returns true when the user has a paid, non-expired subscription
-function isSubscriptionActive(user) {
-  return !!(
-    user?.subscribed &&
-    user?.subscription_end_date &&
-    new Date(user.subscription_end_date) > new Date()
-  );
+// Payment disabled — always returns true so no gates fire
+function isSubscriptionActive(_user) {
+  return true;
 }
 
 async function getUser(phone) {
@@ -253,14 +250,9 @@ async function sendDropPrompt(phone, pickupLabel) {
 // ── welcome back screen ───────────────────────────────────────────────────────
 
 async function sendWelcomeBack(phone, user) {
-  const endDate = user.subscription_end_date
-    ? new Date(user.subscription_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-    : null;
   await sendButtons(
     phone,
-    `Welcome back, *${user.name}*! ✈️\n\n` +
-    (endDate ? `📅 Subscription active until *${endDate}*\n\n` : '') +
-    `What would you like to do?`,
+    `Welcome back, *${user.name}*! ✈️\n\nWhat would you like to do?`,
     [
       { id: 'FIND_PARTNER', title: '🔍 Find a Partner' },
       { id: 'VIEW_PROFILE', title: '👤 My Profile'     },
@@ -272,20 +264,12 @@ async function sendWelcomeBack(phone, user) {
 // ── profile view ──────────────────────────────────────────────────────────────
 
 async function sendProfileView(phone, user) {
-  const endDate = user.subscription_end_date
-    ? new Date(user.subscription_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-    : null;
-  const subStatus = isSubscriptionActive(user)
-    ? `✅ Active until ${endDate}`
-    : `❌ Inactive`;
-
   await sendButtons(
     phone,
     `*Your Profile* 👤\n\n` +
     `👤 Name: ${user.name || 'Not set'}\n` +
     `🧬 Gender: ${genderLabel(user.gender)}\n` +
-    `🤝 Prefers: ${prefLabel(user.preferred_gender)}\n` +
-    `📅 Subscription: ${subStatus}`,
+    `🤝 Prefers: ${prefLabel(user.preferred_gender)}`,
     [
       { id: 'EDIT_PROFILE', title: '✏️ Edit Profile' },
       { id: 'BACK_TO_HOME', title: '⬅️ Back'         },
@@ -508,32 +492,9 @@ async function handleMessage(msg, waName) {
     case 'ONBOARDING_PREFERRED_GENDER': {
       const prefMap = { PREF_ANY: 'ANY', PREF_M: 'M', PREF_F: 'F' };
       const preferred_gender = prefMap[buttonId] || 'ANY';
-      const updatedUser = await upsertUser(phone, { preferred_gender, updated_at: new Date().toISOString() });
-
-      // Profile is complete — gate on subscription before location entry
-      if (isSubscriptionActive(updatedUser)) {
-        await setState(phone, 'ONBOARDING_PICKUP');
-        return sendPickupPrompt(phone, false);
-      }
-
-      // New user or expired subscription → require payment first
-      try {
-        const paymentUrl = await createVerificationPaymentLink(updatedUser);
-        await setState(phone, 'PAYMENT_PENDING');
-        return sendCTAButton(
-          phone,
-          `✅ *Profile saved!* Nice to meet you, *${updatedUser.name || 'friend'}*! 🎉\n\n` +
-          `Pay ₹1 to activate your AasPass profile for *3 months* and start finding cab-split partners.\n\n` +
-          `Tap below to pay securely via Razorpay:`,
-          'Pay ₹1 — 3 Months',
-          paymentUrl
-        );
-      } catch (e) {
-        logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'createPaymentAfterProfile', message: e.message, phone, userState: 'ONBOARDING_PREFERRED_GENDER', error: e }).catch(() => {});
-        // Fallback — proceed without payment if link generation fails
-        await setState(phone, 'ONBOARDING_PICKUP');
-        return sendPickupPrompt(phone, false);
-      }
+      await upsertUser(phone, { preferred_gender, updated_at: new Date().toISOString() });
+      await setState(phone, 'ONBOARDING_PICKUP');
+      return sendPickupPrompt(phone, false);
     }
 
     // ── ONBOARDING: PICKUP LOCATION ───────────────────────────────────────────
@@ -632,27 +593,10 @@ async function handleMessage(msg, waName) {
     }
 
     // ── PAYMENT PENDING ───────────────────────────────────────────────────────
-    // User confirmed details and was sent a payment link — waiting for payment.
-    // Webhook will move them to WAITING automatically once paid.
+    // Payment disabled — move users stuck in this state straight to pickup.
     case 'PAYMENT_PENDING': {
-      // Allow cancel — goes back to confirmation screen
-      if (text === 'CANCEL' || buttonId === 'CONFIRM_NO') {
-        await setState(phone, 'ONBOARDING_CONFIRM');
-        return sendConfirmation(phone, user);
-      }
-      // Any other input: resend the payment link
-      try {
-        const paymentUrl = await createVerificationPaymentLink(user);
-        return sendCTAButton(
-          phone,
-          `Your details are saved 👍 Pay ₹1 to activate your profile for *3 months*:`,
-          'Pay ₹1 — 3 Months',
-          paymentUrl
-        );
-      } catch (e) {
-        logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'resendPaymentLink', message: e.message, phone, userState: 'PAYMENT_PENDING', error: e }).catch(() => {});
-        return sendText(phone, `Having trouble with payment right now 😕 Please try again in a moment.`);
-      }
+      await setState(phone, 'ONBOARDING_PICKUP');
+      return sendPickupPrompt(phone, false);
     }
 
     // ── EDITING: NAME ─────────────────────────────────────────────────────────
@@ -1053,51 +997,14 @@ async function resetForNewSearch(phone, user) {
 }
 
 async function startOrResume(phone, user, waName, forceRestart) {
-  // If payment is pending and this isn't a force-restart → resend payment link
-  if (!forceRestart && user?.state === 'PAYMENT_PENDING') {
-    try {
-      const paymentUrl = await createVerificationPaymentLink(user);
-      return sendCTAButton(
-        phone,
-        `Your profile is saved 👍 Pay ₹1 to activate your AasPass profile for *3 months*:`,
-        'Pay ₹1 — 3 Months',
-        paymentUrl
-      );
-    } catch (e) {
-      logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'startOrResume_paymentPending', message: e.message, phone, error: e }).catch(() => {});
-      return sendText(phone, `Having trouble with payment right now 😕 Please try again in a moment.`);
-    }
-  }
-
   // If already in an active search and this is NOT a force-restart → block and show options
   if (!forceRestart && user?.state && ACTIVE_SEARCH_STATES.has(user.state)) {
     return sendAlreadyInQueueMsg(phone, user);
   }
 
-  // Returning user with name + gender already set
+  // Returning user with name + gender already set → welcome back screen
   if (!forceRestart && user?.name && user?.gender) {
-    if (isSubscriptionActive(user)) {
-      // Active subscriber — show welcome back screen with options
-      return sendWelcomeBack(phone, user);
-    }
-
-    // Subscription expired or never paid → payment required
-    try {
-      const paymentUrl = await createVerificationPaymentLink(user);
-      await setState(phone, 'PAYMENT_PENDING');
-      const isRenewal = user.payment_verified; // has paid at least once before
-      return sendCTAButton(
-        phone,
-        isRenewal
-          ? `Welcome back, *${user.name}*! 👋\n\nYour 3-month subscription has expired. Renew for just ₹1 to keep finding cab-split partners:`
-          : `Welcome back, *${user.name}*! 👋\n\nActivate your AasPass profile for *3 months* with a one-time ₹1 payment:`,
-        isRenewal ? 'Renew for ₹1' : 'Pay ₹1 — 3 Months',
-        paymentUrl
-      );
-    } catch (e) {
-      logError({ severity: 'ERROR', type: 'PAYMENT', operation: 'startOrResume_renewal', message: e.message, phone, error: e }).catch(() => {});
-      return sendText(phone, `Having trouble with payment right now 😕 Please try again in a moment.`);
-    }
+    return sendWelcomeBack(phone, user);
   }
 
   // New user (or forced restart) — full onboarding

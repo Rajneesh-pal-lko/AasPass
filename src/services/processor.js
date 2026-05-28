@@ -45,6 +45,13 @@ async function tryAcquireLock(phone) {
   const lockToken = crypto.randomUUID();
   const staleCutoff = new Date(Date.now() - LOCK_TTL_SECONDS * 1000).toISOString();
 
+  // Ensure a user row exists before trying to acquire the lock.
+  // New users have no row yet — the UPDATE below would match 0 rows and always fail.
+  // ignoreDuplicates: true means this is a no-op for existing rows.
+  await supabase
+    .from('users')
+    .upsert({ phone, is_processing: false }, { onConflict: 'phone', ignoreDuplicates: true });
+
   const { data } = await supabase
     .from('users')
     .update({
@@ -53,7 +60,9 @@ async function tryAcquireLock(phone) {
       lock_acquired_at: new Date().toISOString(),
     })
     .eq('phone', phone)
-    .or(`is_processing.eq.false,lock_acquired_at.lt.${staleCutoff}`)
+    // Auto-recover stale locks: unlock if is_processing is false, OR if
+    // lock_acquired_at is NULL (crashed before it was set), OR if it's older than TTL.
+    .or(`is_processing.eq.false,lock_acquired_at.is.null,lock_acquired_at.lt.${staleCutoff}`)
     .select('lock_token')
     .maybeSingle();
 

@@ -55,6 +55,7 @@ async function createVerificationPaymentLink(user) {
 }
 
 function verifyWebhookSignature(rawBody, signature) {
+  if (!rawBody || !Buffer.isBuffer(rawBody)) return false  // Razorpay sends test pings as non-Buffer — reject silently
   const expected = crypto
     .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
     .update(rawBody)
