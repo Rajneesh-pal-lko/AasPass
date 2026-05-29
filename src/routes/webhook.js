@@ -1,9 +1,43 @@
 const express = require('express');
 const router  = express.Router();
+const https   = require('https');
+const http    = require('http');
 
 const supabase  = require('../config/supabase');
 const { processMessage, isDuplicate, markProcessed } = require('../services/processor');
 const { logMessage, updateProfile } = require('../services/messageLogger');
+
+// ── Staging forwarder ─────────────────────────────────────────────────────────
+// Both prod and staging numbers share the same Meta app → same webhook URL.
+// If a message arrives on the staging number, forward it to the staging server.
+// Staging server replies using its own WHATSAPP_PHONE_NUMBER_ID → reply comes
+// from the staging number. Production never processes staging traffic.
+
+const STAGING_PHONE_NUMBER_ID = process.env.STAGING_PHONE_NUMBER_ID || '';
+const STAGING_WEBHOOK_URL     = process.env.STAGING_WEBHOOK_URL     || '';
+
+function forwardToStaging(body) {
+  if (!STAGING_WEBHOOK_URL) return;
+  try {
+    const payload  = JSON.stringify(body);
+    const url      = new URL(STAGING_WEBHOOK_URL);
+    const lib      = url.protocol === 'https:' ? https : http;
+    const options  = {
+      hostname: url.hostname,
+      port:     url.port || (url.protocol === 'https:' ? 443 : 80),
+      path:     url.pathname,
+      method:   'POST',
+      headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    };
+    const req = lib.request(options);
+    req.on('error', err => console.error('❌ Staging forward error:', err.message));
+    req.write(payload);
+    req.end();
+    console.log('↪ Forwarded message to staging');
+  } catch (err) {
+    console.error('❌ Staging forward failed:', err.message);
+  }
+}
 
 // ── Meta webhook verification (GET) ──────────────────────────────────────────
 router.get('/', (req, res) => {
@@ -34,6 +68,14 @@ router.post('/', (req, res) => {
       const value   = changes?.value;
 
       if (!value?.messages?.length) return;
+
+      // ── Staging forward: if this message came in on the staging number,
+      //    forward to staging server and stop — don't process here.
+      const incomingPhoneNumberId = value?.metadata?.phone_number_id;
+      if (STAGING_PHONE_NUMBER_ID && incomingPhoneNumberId === STAGING_PHONE_NUMBER_ID) {
+        forwardToStaging(req.body);
+        return;
+      }
 
       const contacts = value?.contacts || [];
 
