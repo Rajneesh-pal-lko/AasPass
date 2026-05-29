@@ -63,6 +63,17 @@ async function findMatches(user) {
 }
 
 /**
+ * Rough cab fare estimate for RGIA → anywhere in Hyderabad (₹ per full cab).
+ * Based on typical Ola/Uber pricing: ~₹15/km base + ₹150 minimum.
+ */
+function estimateSavings(dropDistKm) {
+  // Use 25 km as a rough average distance from RGIA to Hyderabad city
+  const avgFare = Math.round(150 + 25 * 15); // ₹525
+  const perPerson = Math.round(avgFare / 2);
+  return perPerson; // ₹262 — round numbers feel more trustworthy
+}
+
+/**
  * Send match results to the user — either "you're first!" or a list of matches.
  */
 async function sendMatchResults(user, matches) {
@@ -74,6 +85,7 @@ async function sendMatchResults(user, matches) {
     return;
   }
 
+  const savings = estimateSavings();
   const rows = matches.slice(0, 10).map((m, i) => {
     const dist  = m.dropDist.toFixed(1);
     const star  = i === 0 ? '⭐ ' : '';
@@ -86,7 +98,9 @@ async function sendMatchResults(user, matches) {
 
   await sendList(
     user.phone,
-    `🎉 *${matches.length} partner${matches.length > 1 ? 's' : ''} found nearby!*\n\nTap a name to send them a cab-split request:`,
+    `🎉 *${matches.length} partner${matches.length > 1 ? 's' : ''} found nearby!*\n\n` +
+    `💰 Split the cab and save *~₹${savings} each*!\n\n` +
+    `Tap a name to send them a cab-split request:`,
     'View Matches',
     [{ title: 'Nearby Partners', rows }]
   );

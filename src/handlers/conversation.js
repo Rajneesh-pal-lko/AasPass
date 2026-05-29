@@ -3,7 +3,10 @@ const { sendText, sendButtons, sendList, sendLocationRequest, sendCTAButton } = 
 const { logError } = require('../utils/errorLogger');
 // Payment disabled — import kept for future use
 // const { createVerificationPaymentLink } = require('../services/razorpay');
-const { getDistanceKm } = require('../utils/haversine');
+const { getDistanceKm, detectAirport } = require('../utils/haversine');
+
+// WhatsApp number for share links (actual phone number, not PHONE_NUMBER_ID)
+const WA_NUMBER = process.env.WHATSAPP_NUMBER || '';
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
 const { parseLocationFromText, isValidCoord } = require('../utils/locationParser');
@@ -163,21 +166,21 @@ async function resolveOrSearch(phone, msgType, locationLat, locationLon, rawText
 // ── onboarding: name ─────────────────────────────────────────────────────────
 
 async function sendNamePrompt(phone, waName) {
+  const intro =
+    `✈️ *Welcome to AasPass!*\n\n` +
+    `We're building *Hyderabad's first* community of airport cab-splitters.\n\n` +
+    `The idea is simple — when you land at RGIA, someone else on your flight is probably going near your destination. ` +
+    `Split the cab, save ₹200-400 every trip. No app needed — everything on WhatsApp.\n\n` +
+    `You're one of our *early members* 🌱 What should we call you?`;
+
   if (waName) {
     const displayName = truncate(waName, 20);
-    await sendButtons(
-      phone,
-      `Welcome to *AasPass* ✈️🚕\n\nWhat should we call you?`,
-      [
-        { id: 'USE_WA_NAME', title: displayName },
-        { id: 'ENTER_NAME',  title: '✏️ Type my name' },
-      ]
-    );
+    await sendButtons(phone, intro, [
+      { id: 'USE_WA_NAME', title: displayName      },
+      { id: 'ENTER_NAME',  title: '✏️ Type my name' },
+    ]);
   } else {
-    await sendText(
-      phone,
-      `Welcome to *AasPass* ✈️🚕\n\nWhat should we call you? Reply with your *first name*.`
-    );
+    await sendText(phone, `${intro}\n\nReply with your *first name* to get started.`);
   }
   await setState(phone, 'ONBOARDING_NAME');
 }
@@ -185,15 +188,15 @@ async function sendNamePrompt(phone, waName) {
 async function sendGenderPrompt(phone) {
   await sendList(
     phone,
-    `Nice to meet you! 👋\n\nWhat's your gender? This helps us show compatible matches.`,
+    `Nice to meet you! 👋\n\nOne quick question — what's your gender?\n\n_This helps us show you compatible matches and keep rides comfortable for everyone._`,
     'Select Gender',
     [{
       title: 'Gender',
       rows: [
-        { id: 'GENDER_M',  title: '👨 Male',               description: '' },
-        { id: 'GENDER_F',  title: '👩 Female',             description: '' },
-        { id: 'GENDER_NB', title: '🏳️ Non-binary',        description: '' },
-        { id: 'GENDER_NS', title: '🤐 Prefer not to say',  description: 'Will match with anyone' },
+        { id: 'GENDER_M',  title: '👨 Male',              description: '' },
+        { id: 'GENDER_F',  title: '👩 Female',            description: '' },
+        { id: 'GENDER_NB', title: '🏳️ Non-binary',       description: '' },
+        { id: 'GENDER_NS', title: '🤐 Prefer not to say', description: 'Will match with anyone' },
       ],
     }]
   );
@@ -226,15 +229,53 @@ async function sendPreferredGenderPromptForProfileEdit(phone) {
   await setState(phone, 'PROFILE_EDIT_PREF');
 }
 
+// ── share nudge ───────────────────────────────────────────────────────────────
+
+async function sendShareNudge(phone) {
+  const link = WA_NUMBER ? `https://wa.me/${WA_NUMBER}` : 'wa.me/AasPassNumber';
+  await sendText(
+    phone,
+    `📢 *Help the community grow — help yourself get faster matches!*\n\n` +
+    `AasPass is brand new in Hyderabad. Right now every new member makes the pool bigger, ` +
+    `which means *you* find a match faster.\n\n` +
+    `Forward this to friends who fly from Hyderabad:\n\n` +
+    `━━━━━━━━━━━━━━━\n` +
+    `_Hey! I'm using AasPass 🚕 — a free WhatsApp service to split airport cabs in Hyderabad. No app, no signup, just WhatsApp. Save the number & text Hi:_\n` +
+    `*${link}*\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `Every friend you invite = faster matches for everyone 🙏`
+  );
+}
+
+// ── other-city message ────────────────────────────────────────────────────────
+
+async function sendOtherCityMessage(phone, cityName, user) {
+  const link = WA_NUMBER ? `https://wa.me/${WA_NUMBER}` : 'wa.me/AasPassNumber';
+  const name = user?.name ? `, *${user.name}*` : '';
+  await sendText(
+    phone,
+    `👋 Hey${name}!\n\n` +
+    `AasPass is currently live only in *Hyderabad* (RGIA) 🌱\n\n` +
+    `We're expanding to *${cityName}* very soon — we'll notify you the moment we launch there!\n\n` +
+    `📢 Meanwhile, if you know anyone who flies from Hyderabad, share AasPass with them — it's completely free:\n\n` +
+    `━━━━━━━━━━━━━━━\n` +
+    `_AasPass 🚕 — Split airport cabs for free in Hyderabad. No app needed, just WhatsApp:_\n` +
+    `*${link}*\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `Thank you for your support! We'll be in your city soon 🙏`
+  );
+}
+
 // ── onboarding: location ─────────────────────────────────────────────────────
 
 async function sendPickupPrompt(phone, isReturning = false) {
   const prefix = isReturning
     ? `Welcome back! ✈️ Let's find you a match.\n\n`
-    : `Great! Let's get started.\n\n`;
+    : `Perfect! Almost there — just 2 quick steps.\n\n`;
   await sendLocationRequest(
     phone,
-    `${prefix}*Step 1 of 2* — Share your *pickup location* 📍\n\nTap the button below, or paste coordinates.`
+    `${prefix}*Step 1 of 2* — Share your *pickup location* 📍\n\n` +
+    `Tap the 📎 button → Location, or paste a Google Maps link.`
   );
   await setState(phone, 'ONBOARDING_PICKUP');
 }
@@ -483,9 +524,11 @@ async function handleMessage(msg, waName) {
     // ── ONBOARDING: GENDER ────────────────────────────────────────────────────
     case 'ONBOARDING_GENDER': {
       const genderMap = { GENDER_M: 'M', GENDER_F: 'F', GENDER_NB: 'NB', GENDER_NS: 'NS' };
-      const gender = genderMap[listId] || 'NS'; // default to NS if somehow skipped
-      await setState(phone, 'ONBOARDING_PREFERRED_GENDER', { gender });
-      return sendPreferredGenderPrompt(phone);
+      const gender = genderMap[listId] || 'NS';
+      // Skip gender preference — default to ANY, user can change in Profile later
+      await upsertUser(phone, { gender, preferred_gender: 'ANY', updated_at: new Date().toISOString() });
+      await setState(phone, 'ONBOARDING_PICKUP');
+      return sendPickupPrompt(phone, false);
     }
 
     // ── ONBOARDING: PREFERRED GENDER ─────────────────────────────────────────
@@ -509,15 +552,26 @@ async function handleMessage(msg, waName) {
         `• 🔗 Or paste a *Google Maps* link`
       );
       if (!loc) {
-        // No location found — try LLM for commands like "cancel", "go back"
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
-          if (intent.followup) return sendText(phone, intent.followup); // LLM answered a question
+          if (intent.followup) return sendText(phone, intent.followup);
         }
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or paste coordinates from Google Maps.`);
       }
+
+      // ── Other-city soft block ──────────────────────────────────────────────
+      // If user is near BLR or DEL, tell them we're Hyderabad-only for now.
+      // They stay in ONBOARDING_PICKUP so they can share a different location.
+      const detectedAirport = detectAirport(loc.lat, loc.lon, 5); // 5km radius
+      if (detectedAirport && detectedAirport.code !== 'HYD') {
+        const cityNames = { BLR: 'Bangalore', DEL: 'Delhi' };
+        const cityName  = cityNames[detectedAirport.code] || detectedAirport.name;
+        await sendOtherCityMessage(phone, cityName, user);
+        return; // stay in ONBOARDING_PICKUP — let them try again or leave
+      }
+
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       await setState(phone, 'ONBOARDING_DROP', {
         departure_lat: loc.lat, departure_long: loc.lon, pickup_label,
@@ -542,10 +596,35 @@ async function handleMessage(msg, waName) {
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or paste coordinates from Google Maps.`);
       }
       const drop_label = await reverseGeocode(loc.lat, loc.lon);
-      const updatedUser = await setState(phone, 'ONBOARDING_CONFIRM', {
-        drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
+
+      // Skip confirmation screen — go straight into the pool
+      await syncProfileFields(phone, user);
+      const now = new Date().toISOString();
+      const activeUser = await upsertUser(phone, {
+        drop_lat:          loc.lat,
+        drop_long:         loc.lon,
+        drop_label,
+        drop_zone:         drop_label,
+        state:             'WAITING',
+        is_active:         true,
+        is_matched:        false,
+        search_started_at: now,
+        expires_at:        new Date(Date.now() + SEARCH_WINDOW_MS).toISOString(),
+        updated_at:        now,
       });
-      return sendConfirmation(phone, updatedUser);
+
+      await sendText(phone,
+        `✅ *You're in!* Searching for a cab-split partner near *${drop_label}*... 🔍\n\n` +
+        `I'll ping you the moment someone nearby joins.\n\n` +
+        `Type *EDIT* to update your trip or *CANCEL* to leave the pool.`
+      );
+
+      // Fire share nudge + match search in parallel (don't block each other)
+      sendShareNudge(phone).catch(() => {});
+      const matches = await findMatches(activeUser);
+      await sendMatchResults(activeUser, matches);
+      await notifyWaitingUsers(activeUser, matches);
+      return;
     }
 
     // ── ONBOARDING: CONFIRM ───────────────────────────────────────────────────
