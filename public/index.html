@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AasPass — Split your airport cab on WhatsApp</title>
+  <meta name="description" content="Find co-passengers on your flight and split the cab fare. No app needed — works entirely on WhatsApp." />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0a;
+      color: #f0f0f0;
+      min-height: 100vh;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2rem 1.5rem;
+      background: radial-gradient(ellipse at top, #1a2a1a 0%, #0a0a0a 60%);
+    }
+
+    .badge {
+      display: inline-block;
+      background: #1a3a1a;
+      border: 1px solid #2d5a2d;
+      color: #4caf50;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.35rem 0.9rem;
+      border-radius: 99px;
+      margin-bottom: 1.5rem;
+    }
+
+    .logo {
+      font-size: 3.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #ffffff;
+      margin-bottom: 0.5rem;
+    }
+
+    .logo span { color: #4caf50; }
+
+    .tagline {
+      font-size: 1.25rem;
+      color: #999;
+      margin-bottom: 2.5rem;
+      max-width: 420px;
+      line-height: 1.6;
+    }
+
+    /* ── Live stats ── */
+    .stats-bar {
+      display: flex;
+      gap: 2rem;
+      margin-bottom: 2.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .stat {
+      text-align: center;
+    }
+
+    .stat-number {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #4caf50;
+      line-height: 1;
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      color: #666;
+      margin-top: 0.25rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .live-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      background: #4caf50;
+      border-radius: 50%;
+      margin-right: 5px;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* ── CTA ── */
+    .cta-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      background: #25d366;
+      color: #000;
+      font-size: 1.05rem;
+      font-weight: 700;
+      padding: 0.9rem 2rem;
+      border-radius: 99px;
+      text-decoration: none;
+      transition: transform 0.15s, box-shadow 0.15s;
+      box-shadow: 0 4px 24px rgba(37, 211, 102, 0.35);
+    }
+
+    .cta-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 32px rgba(37, 211, 102, 0.5);
+    }
+
+    .cta-btn svg { width: 22px; height: 22px; }
+
+    .cta-sub {
+      font-size: 0.8rem;
+      color: #555;
+      margin-top: 0.8rem;
+    }
+
+    /* ── How it works ── */
+    .section {
+      padding: 5rem 1.5rem;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .section-title {
+      font-size: 1.75rem;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 3rem;
+      color: #fff;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .step {
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 16px;
+      padding: 1.75rem 1.5rem;
+      text-align: center;
+    }
+
+    .step-icon {
+      font-size: 2.2rem;
+      margin-bottom: 1rem;
+    }
+
+    .step-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 0.5rem;
+    }
+
+    .step-desc {
+      font-size: 0.875rem;
+      color: #666;
+      line-height: 1.6;
+    }
+
+    /* ── Why section ── */
+    .why-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+
+    .why-card {
+      background: #111;
+      border: 1px solid #1e1e1e;
+      border-radius: 12px;
+      padding: 1.25rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+    }
+
+    .why-icon { font-size: 1.4rem; flex-shrink: 0; margin-top: 2px; }
+
+    .why-text strong {
+      display: block;
+      font-size: 0.9rem;
+      color: #fff;
+      margin-bottom: 0.2rem;
+    }
+
+    .why-text span {
+      font-size: 0.8rem;
+      color: #555;
+    }
+
+    /* ── City badge ── */
+    .city-section {
+      text-align: center;
+      padding: 3rem 1.5rem 5rem;
+    }
+
+    .city-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 99px;
+      padding: 0.5rem 1.25rem;
+      font-size: 0.875rem;
+      color: #999;
+      margin: 0.4rem;
+    }
+
+    .city-badge.active { border-color: #2d5a2d; color: #4caf50; }
+    .city-badge.soon { color: #555; }
+
+    .city-label {
+      font-size: 0.85rem;
+      color: #444;
+      margin-bottom: 1rem;
+    }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid #1a1a1a;
+      padding: 2rem 1.5rem;
+      text-align: center;
+      font-size: 0.8rem;
+      color: #444;
+    }
+
+    footer a { color: #555; text-decoration: none; }
+    footer a:hover { color: #888; }
+
+    .divider {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="badge">✈️ Hyderabad (RGIA) — Now Live</div>
+    <div class="logo">Aas<span>Pass</span></div>
+    <p class="tagline">Find co-passengers on your flight and split the cab fare home. No app. Just WhatsApp.</p>
+
+    <!-- Live stats -->
+    <div class="stats-bar">
+      <div class="stat">
+        <div class="stat-number" id="stat-total">—</div>
+        <div class="stat-label"><span class="live-dot"></span>Total Members</div>
+      </div>
+      <div class="stat">
+        <div class="stat-number" id="stat-active">—</div>
+        <div class="stat-label">Active Now</div>
+      </div>
+      <div class="stat">
+        <div class="stat-number" id="stat-matches">—</div>
+        <div class="stat-label">Rides Split</div>
+      </div>
+    </div>
+
+    <a class="cta-btn" href="https://wa.me/919000206912?text=Hi" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+      Start on WhatsApp
+    </a>
+    <p class="cta-sub">Free to use · No sign-up · Works on any phone</p>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- How it works -->
+  <section class="section">
+    <h2 class="section-title">How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-icon">💬</div>
+        <div class="step-title">Message AasPass</div>
+        <div class="step-desc">Send "Hi" to AasPass on WhatsApp. Share your name and drop location.</div>
+      </div>
+      <div class="step">
+        <div class="step-icon">🔍</div>
+        <div class="step-title">Get Matched</div>
+        <div class="step-desc">AasPass finds co-passengers on your flight heading to nearby areas.</div>
+      </div>
+      <div class="step">
+        <div class="step-icon">🚕</div>
+        <div class="step-title">Share the Ride</div>
+        <div class="step-desc">Connect, coordinate, and split the fare. Save ₹200–400 every trip.</div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- Why AasPass -->
+  <section class="section">
+    <h2 class="section-title">Why AasPass</h2>
+    <div class="why-grid">
+      <div class="why-card">
+        <div class="why-icon">📱</div>
+        <div class="why-text">
+          <strong>No app to download</strong>
+          <span>Works entirely through WhatsApp — already on your phone</span>
+        </div>
+      </div>
+      <div class="why-card">
+        <div class="why-icon">💰</div>
+        <div class="why-text">
+          <strong>Save ₹200–400 per trip</strong>
+          <span>Split a ₹500 cab fare and both pay less than an auto</span>
+        </div>
+      </div>
+      <div class="why-card">
+        <div class="why-icon">⚡</div>
+        <div class="why-text">
+          <strong>Under 2 minutes</strong>
+          <span>Onboard and get matched before your bags arrive</span>
+        </div>
+      </div>
+      <div class="why-card">
+        <div class="why-icon">🔒</div>
+        <div class="why-text">
+          <strong>Safe & verified</strong>
+          <span>Matched only with passengers on the same flight</span>
+        </div>
+      </div>
+      <div class="why-card">
+        <div class="why-icon">📍</div>
+        <div class="why-text">
+          <strong>Nearby drops only</strong>
+          <span>Matched within 5km of your drop location</span>
+        </div>
+      </div>
+      <div class="why-card">
+        <div class="why-icon">🆓</div>
+        <div class="why-text">
+          <strong>Completely free</strong>
+          <span>No charges, no subscription — free for everyone</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- Cities -->
+  <section class="city-section">
+    <p class="city-label">AVAILABLE CITIES</p>
+    <div>
+      <span class="city-badge active">✅ Hyderabad (RGIA)</span>
+      <span class="city-badge soon">🔜 Bangalore (KIA)</span>
+      <span class="city-badge soon">🔜 Delhi (IGI)</span>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>© 2025 AasPass &nbsp;·&nbsp; <a href="/privacy">Privacy Policy</a> &nbsp;·&nbsp; <a href="https://wa.me/919000206912?text=Hi" target="_blank">Contact on WhatsApp</a></p>
+  </footer>
+
+  <script>
+    async function loadStats() {
+      try {
+        const res  = await fetch('/api/stats');
+        const data = await res.json();
+        document.getElementById('stat-total').textContent   = data.totalUsers   ?? '—';
+        document.getElementById('stat-active').textContent  = data.activeNow    ?? '—';
+        document.getElementById('stat-matches').textContent = data.totalMatches ?? '—';
+      } catch (e) {
+        // fail silently — stats are a nice-to-have
+      }
+    }
+
+    loadStats();
+    setInterval(loadStats, 30000); // refresh every 30s
+  </script>
+
+</body>
+</html>

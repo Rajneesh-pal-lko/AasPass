@@ -37,6 +37,30 @@ app.use('/pick',     pickerRouter);
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'AasPass' }));
 
+// Privacy policy
+app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'public/privacy.html')));
+
+// Public stats API — used by landing page for live user count
+app.get('/api/stats', async (req, res) => {
+  try {
+    const supabase = require('./src/config/supabase')
+
+    const [totalRes, activeRes, matchesRes] = await Promise.all([
+      supabase.from('users').select('user_id', { count: 'exact', head: true }),
+      supabase.from('users').select('user_id', { count: 'exact', head: true }).eq('is_active', true),
+      supabase.from('confirmed_matches').select('match_id', { count: 'exact', head: true }),
+    ])
+
+    res.json({
+      totalUsers:   totalRes.count   ?? 0,
+      activeNow:    activeRes.count  ?? 0,
+      totalMatches: matchesRes.count ?? 0,
+    })
+  } catch (err) {
+    res.json({ totalUsers: 0, activeNow: 0, totalMatches: 0 })
+  }
+})
+
 // Start background jobs
 const { startCleanupJob }    = require('./src/services/cleanup');
 const { startDebounceWorker } = require('./src/services/debounceWorker');
