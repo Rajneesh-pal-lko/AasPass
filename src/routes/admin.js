@@ -5,12 +5,18 @@ const path     = require('path')
 const { sendText } = require('../services/whatsapp')
 const { adminDeactivateUser, adminResetUserState } = require('../services/userService')
 
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'aaspass_admin_2024'
+const ADMIN_PASSWORD   = process.env.ADMIN_PASSWORD   || 'aaspass_admin_2024'
+// If set, the login page is only reachable at /admin/login?key=<ADMIN_ACCESS_KEY>
+// Without the correct key, the login page returns 404 — hides it from strangers.
+// Set ADMIN_ACCESS_KEY to a random string in your Railway env vars.
+const ADMIN_ACCESS_KEY = process.env.ADMIN_ACCESS_KEY || ''
 
 // ── Auth middleware ────────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
   if (req.session?.admin) return next()
-  res.redirect('/admin/login')
+  // Preserve the access key in the redirect so the login page stays accessible
+  const keyParam = ADMIN_ACCESS_KEY ? `?key=${ADMIN_ACCESS_KEY}` : ''
+  res.redirect(`/admin/login${keyParam}`)
 }
 
 // ── Audit logger (fire-and-forget) ────────────────────────────────────────────
@@ -28,6 +34,10 @@ async function auditLog(action, targetPhone, details = {}) {
 // ── Login / logout ─────────────────────────────────────────────────────────────
 router.get('/login', (req, res) => {
   if (req.session?.admin) return res.redirect('/admin')
+  // If ADMIN_ACCESS_KEY is set, require it in the URL — strangers get 404
+  if (ADMIN_ACCESS_KEY && req.query.key !== ADMIN_ACCESS_KEY) {
+    return res.status(404).send('Not found')
+  }
   res.sendFile(path.join(__dirname, '../../public/admin/login.html'))
 })
 
@@ -36,12 +46,14 @@ router.post('/login', express.urlencoded({ extended: false }), (req, res) => {
     req.session.admin = true
     return res.redirect('/admin')
   }
-  res.redirect('/admin/login?error=1')
+  const keyParam = ADMIN_ACCESS_KEY ? `?key=${ADMIN_ACCESS_KEY}` : ''
+  res.redirect(`/admin/login${keyParam}&error=1`)
 })
 
 router.get('/logout', (req, res) => {
   req.session.destroy()
-  res.redirect('/admin/login')
+  const keyParam = ADMIN_ACCESS_KEY ? `?key=${ADMIN_ACCESS_KEY}` : ''
+  res.redirect(`/admin/login${keyParam}`)
 })
 
 // ── Main dashboard ─────────────────────────────────────────────────────────────

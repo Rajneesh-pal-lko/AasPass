@@ -8,10 +8,7 @@ const app = express();
 // Parse JSON for most routes
 app.use(express.json());
 
-// Serve static files (admin UI)
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Session middleware
+// Session MUST come before express.static so req.session exists on all requests
 app.set('trust proxy', 1);
 app.use(session({
   secret: process.env.SESSION_SECRET || 'aaspass_session_secret_2024',
@@ -22,6 +19,21 @@ app.use(session({
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
   },
 }));
+
+// Block unauthenticated direct static access to admin dashboard.
+// express.static would otherwise serve public/admin/index.html to anyone,
+// bypassing the requireAuth middleware in adminRouter.
+app.use((req, res, next) => {
+  const p = req.path;
+  const isAdminDashboard = p === '/admin' || p === '/admin/' || p === '/admin/index.html';
+  if (isAdminDashboard && !req.session?.admin) {
+    return res.redirect('/admin/login');
+  }
+  next();
+});
+
+// Static files (landing page, login page assets, etc.)
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Routes
 const webhookRouter  = require('./src/routes/webhook');
