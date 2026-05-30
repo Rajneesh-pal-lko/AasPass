@@ -330,31 +330,40 @@ router.get('/api/feedback', requireAuth, async (req, res) => {
   try {
     const offset = parseInt(req.query.page || 0) * 50
 
-    const { data: msgs, error } = await supabase
-      .from('message_logs')
-      .select('phone, message_text, created_at')
-      .eq('direction', 'incoming')
-      .eq('user_state', 'USER_FEEDBACK')
+    // Feedback is stored in support_queue with issue_type = 'USER_FEEDBACK'
+    const { data: items, count, error } = await supabase
+      .from('support_queue')
+      .select('*, user:users!user_id(phone, name)', { count: 'exact' })
+      .eq('issue_type', 'USER_FEEDBACK')
       .order('created_at', { ascending: false })
       .range(offset, offset + 49)
     if (error) throw error
 
-    if (!msgs?.length) return res.json({ feedback: [], total: 0 })
+    if (!items?.length) return res.json({ feedback: [], total: 0 })
 
-    // Fetch profile names for the unique phones in this small result set
-    const phones = [...new Set(msgs.map(m => m.phone))]
+    // Fetch profile names (wa_name) for each user phone
+    const phones = [...new Set(items.map(i => i.user?.phone).filter(Boolean))]
     const { data: profiles } = await supabase
       .from('user_profiles').select('phone, wa_name').in('phone', phones)
     const nameMap = {}; for (const p of (profiles || [])) nameMap[p.phone] = p.wa_name
 
-    // Group messages by phone
+    // Group by phone so multiple feedback messages from same user appear together
     const grouped = {}
-    for (const msg of msgs) {
-      if (!grouped[msg.phone]) grouped[msg.phone] = { phone: msg.phone, name: nameMap[msg.phone] || null, messages: [], latestAt: msg.created_at }
-      grouped[msg.phone].messages.push({ text: msg.message_text, createdAt: msg.created_at })
+    for (const item of items) {
+      const phone = item.user?.phone
+      if (!phone) continue
+      if (!grouped[phone]) {
+        grouped[phone] = {
+          phone,
+          name: nameMap[phone] || item.user?.name || null,
+          messages: [],
+          latestAt: item.created_at,
+        }
+      }
+      grouped[phone].messages.push({ text: item.description, createdAt: item.created_at })
     }
 
-    res.json({ feedback: Object.values(grouped), total: Object.keys(grouped).length })
+    res.json({ feedback: Object.values(grouped), total: count })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
