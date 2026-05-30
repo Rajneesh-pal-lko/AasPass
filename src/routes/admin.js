@@ -55,19 +55,34 @@ router.get('/', requireAuth, (req, res) => {
 
 router.get('/api/conversations', requireAuth, async (req, res) => {
   try {
-    const { data, error } = await supabase
+    // Select only guaranteed columns; message_type is optional (may not exist on all envs)
+    const { data: rawData, error } = await supabase
       .from('message_logs')
       .select('phone, message_text, direction, created_at, message_type')
       .order('created_at', { ascending: false })
-    if (error) throw error
+
+    // If message_type column doesn't exist, fall back to selecting without it
+    let data = rawData
+    if (error) {
+      if (error.message && error.message.includes('message_type')) {
+        const { data: fallback, error: err2 } = await supabase
+          .from('message_logs')
+          .select('phone, message_text, direction, created_at')
+          .order('created_at', { ascending: false })
+        if (err2) throw err2
+        data = fallback
+      } else {
+        throw error
+      }
+    }
 
     const convMap = {}
-    for (const msg of data) {
+    for (const msg of (data || [])) {
       if (!convMap[msg.phone]) {
         convMap[msg.phone] = {
           phone: msg.phone,
           lastMessage: msg.message_text,
-          lastMessageType: msg.message_type,
+          lastMessageType: msg.message_type || null,
           lastDirection: msg.direction,
           lastTime: msg.created_at,
           messageCount: 0,
@@ -77,22 +92,32 @@ router.get('/api/conversations', requireAuth, async (req, res) => {
     }
 
     const phones = Object.keys(convMap)
-    const { data: profiles } = await supabase.from('user_profiles').select('phone, wa_name').in('phone', phones)
-    const { data: users }    = await supabase.from('users').select('phone, state, flight_number, is_active, is_matched').in('phone', phones)
+    if (phones.length === 0) return res.json([])
 
-    const profileMap = {}; for (const p of (profiles || [])) profileMap[p.phone] = p.wa_name
-    const userMap    = {}; for (const u of (users || []))    userMap[u.phone]    = u
+    // user_profiles may not exist on all envs — gracefully handle
+    const [profilesResult, usersResult] = await Promise.all([
+      supabase.from('user_profiles').select('phone, wa_name').in('phone', phones),
+      supabase.from('users').select('phone, state, flight_number, is_active, is_matched').in('phone', phones),
+    ])
+
+    const profileMap = {}
+    for (const p of (profilesResult.data || [])) profileMap[p.phone] = p.wa_name
+    const userMap = {}
+    for (const u of (usersResult.data || [])) userMap[u.phone] = u
 
     const conversations = Object.values(convMap).map(c => ({
       ...c,
-      name:      profileMap[c.phone] || null,
-      state:     userMap[c.phone]?.state || 'IDLE',
+      name:         profileMap[c.phone] || null,
+      state:        userMap[c.phone]?.state || 'IDLE',
       flightNumber: userMap[c.phone]?.flight_number || null,
-      isActive:  userMap[c.phone]?.is_active || false,
+      isActive:     userMap[c.phone]?.is_active || false,
     })).sort((a, b) => new Date(b.lastTime) - new Date(a.lastTime))
 
     res.json(conversations)
-  } catch (err) { res.status(500).json({ error: err.message }) }
+  } catch (err) {
+    console.error('[admin] conversations error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
 })
 
 router.get('/api/messages/:phone', requireAuth, async (req, res) => {

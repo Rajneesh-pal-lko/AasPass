@@ -616,10 +616,25 @@ async function loadStats() {
 async function loadConversations() {
   try {
     const res = await fetch('/admin/api/conversations')
-    conversations = await res.json()
+    if (!res.ok) {
+      const txt = await res.text()
+      document.getElementById('conv-list').innerHTML =
+        `<div class="loading" style="color:#ff4444">API error ${res.status}: ${escHtml(txt.substring(0,200))}</div>`
+      return
+    }
+    const data = await res.json()
+    if (data.error) {
+      document.getElementById('conv-list').innerHTML =
+        `<div class="loading" style="color:#ff4444">Error: ${escHtml(data.error)}</div>`
+      return
+    }
+    conversations = Array.isArray(data) ? data : []
     renderConversations(conversations)
     loadStats()
-  } catch (_) {}
+  } catch (err) {
+    document.getElementById('conv-list').innerHTML =
+      `<div class="loading" style="color:#ff4444">Failed to load: ${escHtml(err.message)}</div>`
+  }
 }
 
 function renderConversations(list) {
