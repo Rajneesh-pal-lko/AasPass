@@ -169,7 +169,7 @@ async function resolveOrSearch(phone, msgType, locationLat, locationLon, rawText
 async function sendNamePrompt(phone, waName) {
   const websiteLine = WEBSITE_URL ? `\n🌐 Learn more: ${WEBSITE_URL}\n` : '';
   const intro =
-    `✈️ *Welcome to AasPass!*\n\n` +
+    `🚕 *Welcome to AasPass!*\n\n` +
     `We're building *Hyderabad's first* community of airport cab-splitters.\n\n` +
     `The idea is simple — when you land at RGIA, find someone heading to a nearby destination. ` +
     `Split the cab, save ₹300-700+ every trip. No app needed — everything on WhatsApp.\n` +
@@ -273,7 +273,7 @@ async function sendOtherCityMessage(phone, cityName, user) {
 
 async function sendPickupPrompt(phone, isReturning = false) {
   const prefix = isReturning
-    ? `Welcome back! ✈️ Let's find you a match.\n\n`
+    ? `Welcome back! 🚕 Let's find you a match.\n\n`
     : `Perfect! Almost there — just 2 quick steps.\n\n`;
   await sendLocationRequest(
     phone,
@@ -296,7 +296,7 @@ async function sendDropPrompt(phone, pickupLabel) {
 async function sendWelcomeBack(phone, user) {
   await sendButtons(
     phone,
-    `Welcome back, *${user.name}*! ✈️\n\nWhat would you like to do?`,
+    `Welcome back, *${user.name}*! 🚕\n\nWhat would you like to do?`,
     [
       { id: 'FIND_PARTNER', title: '🔍 Find a Partner' },
       { id: 'VIEW_PROFILE', title: '👤 My Profile'     },
@@ -849,7 +849,7 @@ async function handleMessage(msg, waName) {
       }
       if (buttonId === 'RETRY_NO') {
         await setState(phone, 'IDLE', { is_active: false });
-        return sendText(phone, `No problem! Send "hi" whenever you're ready to search again. ✈️`);
+        return sendText(phone, `No problem! Send "hi" whenever you're ready to search again. 🚕`);
       }
       return sendText(phone, `Please tap *Yes* or *No* on the message above to continue.`);
     }
@@ -882,7 +882,7 @@ async function handleMessage(msg, waName) {
     case 'MATCHED': {
       if (text === 'CANCEL') return initiateCancelAfterMatch(phone, user);
       if (text === 'CONFIRM CANCEL') return handleCancelAfterMatch(phone, user);
-      if (text === 'BACK')   return sendText(phone, `Your match is still active! Safe travels. ✈️`);
+      if (text === 'BACK')   return sendText(phone, `Your match is still active! Safe travels. 🚕`);
       if (text === 'BLOCK')  return handleBlock(phone, user);
 
       if (buttonId === 'SHARE_CONTACT') return handleShareContact(phone, user);
@@ -913,7 +913,7 @@ async function handleMessage(msg, waName) {
         `All done! 🎉 Thanks for using AasPass.\n\n` +
         `💬 Have suggestions or feedback? Type *FEEDBACK* anytime — we read every message.\n\n` +
         `📢 Loved it? Share with friends who fly from Hyderabad — the more members, the faster everyone matches!\n\n` +
-        `See you on the next trip! ✈️${websiteEnd}`
+        `See you on the next trip! 🚕${websiteEnd}`
       );
     }
 
@@ -1575,7 +1575,7 @@ async function sendHelp(phone) {
   const websiteLine  = WEBSITE_URL ? `\n🌐 *Website:* ${WEBSITE_URL}` : '';
   const contactLine  = WA_NUMBER   ? `\n💬 *Contact us:* wa.me/${WA_NUMBER}?text=Hi` : '';
   return sendText(phone,
-    `*AasPass Help* ✈️\n\n` +
+    `*AasPass Help* 🚕\n\n` +
     `*Commands:*\n` +
     `*hi / start* — Begin or resume\n` +
     `*MATCHES* — View available matches\n` +
@@ -1683,7 +1683,7 @@ async function handleLLMIntent(intent, phone, user, waName, state) {
 
     case 'EXTEND_NO': {
       await setState(phone, 'IDLE', { is_active: false });
-      return sendText(phone, `No problem! Send *hi* whenever you're ready to search again. ✈️`);
+      return sendText(phone, `No problem! Send *hi* whenever you're ready to search again. 🚕`);
     }
 
     // ACCEPT / DECLINE require a specific user ID — can't resolve from plain text alone.
