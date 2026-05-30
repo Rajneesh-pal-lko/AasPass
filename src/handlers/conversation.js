@@ -6,7 +6,8 @@ const { logError } = require('../utils/errorLogger');
 const { getDistanceKm, detectAirport } = require('../utils/haversine');
 
 // WhatsApp number for share links (actual phone number, not PHONE_NUMBER_ID)
-const WA_NUMBER = process.env.WHATSAPP_NUMBER || '';
+const WA_NUMBER   = process.env.WHATSAPP_NUMBER || '';
+const WEBSITE_URL = process.env.SERVER_URL      || '';
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
 const { parseLocationFromText, isValidCoord } = require('../utils/locationParser');
@@ -28,7 +29,7 @@ const LOCATION_STATES = new Set([
 
 // States where the user's text IS free-form data input, not a command.
 // e.g. typing their name or rating feedback — bypass LLM entirely.
-const FREE_TEXT_STATES = new Set(['ONBOARDING_NAME', 'EDITING_NAME', 'RATING_FEEDBACK', 'PROFILE_EDIT_NAME']);
+const FREE_TEXT_STATES = new Set(['ONBOARDING_NAME', 'EDITING_NAME', 'RATING_FEEDBACK', 'PROFILE_EDIT_NAME', 'USER_FEEDBACK']);
 
 // Exact-match keywords (UPPERCASED) that the state switch already handles directly.
 // Text matching these goes straight to the switch — no LLM needed.
@@ -166,11 +167,13 @@ async function resolveOrSearch(phone, msgType, locationLat, locationLon, rawText
 // ── onboarding: name ─────────────────────────────────────────────────────────
 
 async function sendNamePrompt(phone, waName) {
+  const websiteLine = WEBSITE_URL ? `\n🌐 Learn more: ${WEBSITE_URL}\n` : '';
   const intro =
     `✈️ *Welcome to AasPass!*\n\n` +
     `We're building *Hyderabad's first* community of airport cab-splitters.\n\n` +
-    `The idea is simple — when you land at RGIA, someone else on your flight is probably going near your destination. ` +
-    `Split the cab, save ₹200-400 every trip. No app needed — everything on WhatsApp.\n\n` +
+    `The idea is simple — when you land at RGIA, find someone heading to a nearby destination. ` +
+    `Split the cab, save ₹300-700+ every trip. No app needed — everything on WhatsApp.\n` +
+    `${websiteLine}\n` +
     `You're one of our *early members* 🌱 What should we call you?`;
 
   if (waName) {
@@ -412,8 +415,9 @@ async function handleMessage(msg, waName) {
     await upsertUser(phone, { is_active: false, state: 'IDLE' });
     return sendText(phone, `You've been removed from AasPass. Send "hi" anytime to come back. 👋`);
   }
-  if (text === 'HELP')    return sendHelp(phone);
-  if (text === 'STATUS')  return sendStatus(phone);
+  if (text === 'HELP')     return sendHelp(phone);
+  if (text === 'STATUS')   return sendStatus(phone);
+  if (text === 'FEEDBACK') return sendFeedbackPrompt(phone);
 
   const user  = await getUser(phone);
   const state = user?.state || 'IDLE';
@@ -904,7 +908,38 @@ async function handleMessage(msg, waName) {
       const feedback = text === 'SKIP' ? null : rawText;
       await saveRating(phone, user, feedback);
       await setState(phone, 'COMPLETED', { is_active: false, is_matched: false });
-      return sendText(phone, `All done! 🎉 Thanks for using AasPass.\n\nSee you on the next trip! ✈️`);
+      const websiteEnd = WEBSITE_URL ? `\n\n🌐 Check us out: ${WEBSITE_URL}` : '';
+      return sendText(phone,
+        `All done! 🎉 Thanks for using AasPass.\n\n` +
+        `💬 Have suggestions or feedback? Type *FEEDBACK* anytime — we read every message.\n\n` +
+        `📢 Loved it? Share with friends who fly from Hyderabad — the more members, the faster everyone matches!\n\n` +
+        `See you on the next trip! ✈️${websiteEnd}`
+      );
+    }
+
+    // ── USER_FEEDBACK ─────────────────────────────────────────────────────────
+    // User typed FEEDBACK command from any state — we collect their message,
+    // save it to support_queue, then restore them to their previous state.
+    case 'USER_FEEDBACK': {
+      const feedbackText = rawText;
+      if (!feedbackText || feedbackText.length < 2) {
+        return sendText(phone, `Please type your feedback message and send it. 😊`);
+      }
+      await supabase.from('support_queue').insert({
+        user_id:     user.user_id,
+        issue_type:  'USER_FEEDBACK',
+        description: feedbackText,
+        created_at:  new Date().toISOString(),
+        resolved:    false,
+      });
+      // Restore user to their previous state
+      const restoreState = user.pre_feedback_state || 'IDLE';
+      await setState(phone, restoreState, { pre_feedback_state: null });
+      const websiteLine = WEBSITE_URL ? `\n\n🌐 ${WEBSITE_URL}` : '';
+      return sendText(phone,
+        `Thank you! 🙏 Your feedback has been noted.\n\n` +
+        `We read every message and use it to improve AasPass.${websiteLine}`
+      );
     }
 
     // ── REPORTING ─────────────────────────────────────────────────────────────
@@ -928,7 +963,8 @@ async function handleMessage(msg, waName) {
       });
 
       await setState(phone, 'COMPLETED', { is_active: false, is_matched: false });
-      return sendText(phone, `We've logged your report: *${category}*.\n\nOur team will review it shortly. Thank you for keeping AasPass safe. 🙏`);
+      const contactUs = WA_NUMBER ? `\n\nIf it's urgent, message us directly: wa.me/${WA_NUMBER}?text=Support` : '';
+      return sendText(phone, `We've logged your report: *${category}*.\n\nOur team will review it shortly. Thank you for keeping AasPass safe. 🙏${contactUs}`);
     }
 
     // ── HOME (welcome back screen) ────────────────────────────────────────────
@@ -1536,19 +1572,35 @@ async function notifyWaitingUsers(newUser, matchesForNewUser) {
 // ── Utility commands ──────────────────────────────────────────────────────────
 
 async function sendHelp(phone) {
+  const websiteLine  = WEBSITE_URL ? `\n🌐 *Website:* ${WEBSITE_URL}` : '';
+  const contactLine  = WA_NUMBER   ? `\n💬 *Contact us:* wa.me/${WA_NUMBER}?text=Hi` : '';
   return sendText(phone,
-    `*AasPass Commands* ✈️\n\n` +
+    `*AasPass Help* ✈️\n\n` +
+    `*Commands:*\n` +
     `*hi / start* — Begin or resume\n` +
     `*MATCHES* — View available matches\n` +
     `*CANCEL* — Cancel request or match\n` +
     `*DONE* — Confirm trip completed\n` +
     `*ISSUE* — Report a problem\n` +
+    `*FEEDBACK* — Share your thoughts with us\n` +
     `*BLOCK* — Block current match (silent)\n` +
     `*STATUS* — Check your current status\n` +
     `*RESTART* — Start fresh\n` +
     `*STOP* — Unsubscribe\n` +
-    `*HELP* — Show this list`
+    `*HELP* — Show this list\n` +
+    `\n─────────────────\n` +
+    `*Need help or have a suggestion?*${contactLine}${websiteLine}`
   );
+}
+
+async function sendFeedbackPrompt(phone) {
+  await sendText(phone,
+    `💬 *We'd love to hear from you!*\n\n` +
+    `What do you think of AasPass? Any suggestions, issues, or ideas?\n\n` +
+    `Just type your message and we'll read it personally. 🙏`
+  );
+  const user = await getUser(phone);
+  await setState(phone, 'USER_FEEDBACK', { pre_feedback_state: user?.state || 'IDLE' });
 }
 
 async function sendStatus(phone) {
