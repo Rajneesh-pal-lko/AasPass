@@ -235,16 +235,26 @@ async function sendPreferredGenderPromptForProfileEdit(phone) {
 // ── share nudge ───────────────────────────────────────────────────────────────
 
 async function sendShareNudge(phone) {
-  const link = WA_NUMBER ? `https://wa.me/${WA_NUMBER}` : null;
-  if (!link) return; // Don't send nudge if number not configured
-  await sendText(
-    phone,
-    `💡 *More users = faster matches for you!*\n\n` +
-    `Know someone who flies from Hyderabad? Forward this:\n\n` +
-    `━━━━━━━━━━━━━━━\n` +
-    `_Split your airport cab for free! No app needed — just WhatsApp._\n` +
-    `_Text *Hi* to get started: ${link}_\n` +
-    `━━━━━━━━━━━━━━━`
+  const number = WA_NUMBER ? String(WA_NUMBER).trim().replace(/\D/g, '') : null;
+  if (!number) return; // Don't send nudge if number not configured
+  const link = `https://wa.me/${number}`;
+
+  // Message 1 — context (not forwardable)
+  await sendText(phone,
+    `🤝 *Help grow the AasPass community!*\n\n` +
+    `The bigger our community, the faster everyone finds a match.\n\n` +
+    `👇 *Long press the next message → tap Forward* to share with friends who fly from Hyderabad:`
+  );
+
+  // Message 2 — clean forwardable message (no intro, no "I am using")
+  await sendText(phone,
+    `🚕 *Split your airport cab for free!*\n\n` +
+    `AasPass matches passengers heading the same way so you share one cab and split the fare.\n\n` +
+    `✅ No app download\n` +
+    `✅ Works at Hyderabad, Bangalore & Delhi airports\n` +
+    `✅ Just WhatsApp\n\n` +
+    `Send *Hi* to get started 👇\n` +
+    `${link}`
   );
 }
 
@@ -285,7 +295,7 @@ async function sendPickupPrompt(phone, isReturning = false) {
   await sendLocationRequest(
     phone,
     `${prefix}*Step 1 of 2* — Share your *pickup location* 📍\n\n` +
-    `Tap the 📎 button → Location, or paste a Google Maps link.`
+    `Tap the 📎 button → Location, or type coordinates e.g. 17.4239, 78.4738`
   );
   await setState(phone, 'ONBOARDING_PICKUP');
 }
@@ -293,7 +303,7 @@ async function sendPickupPrompt(phone, isReturning = false) {
 async function sendDropPrompt(phone, pickupLabel) {
   await sendLocationRequest(
     phone,
-    `📍 *Pickup:* ${pickupLabel}\n\n*Step 2 of 2* — Where should we drop you? 🎯\n\nTap the button to pick your destination, or paste coordinates from Google Maps.`
+    `📍 *Pickup:* ${pickupLabel}\n\n*Step 2 of 2* — Where should we drop you? 🎯\n\nTap the button to pick your destination, or type coordinates e.g. 17.4239, 78.4738`
   );
   await setState(phone, 'ONBOARDING_DROP');
 }
@@ -560,7 +570,7 @@ async function handleMessage(msg, waName) {
         `Please share your location using one of these instead:\n` +
         `• 📍 Tap 📎 → Location → share pin *(easiest)*\n` +
         `• 🔗 Open Apple Maps → Share → *Copy Link* (use the full maps.apple.com link)\n` +
-        `• 🔗 Or paste a *Google Maps* link`
+        `• 🔢 Or type coordinates e.g. 17.4239, 78.4738`
       );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
@@ -569,7 +579,7 @@ async function handleMessage(msg, waName) {
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
           if (intent.followup) return sendText(phone, intent.followup);
         }
-        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
       }
 
       // ── Other-city soft block ──────────────────────────────────────────────
@@ -595,7 +605,7 @@ async function handleMessage(msg, waName) {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
       if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
-        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), or type coordinates e.g. 17.4239, 78.4738`
       );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
@@ -604,7 +614,7 @@ async function handleMessage(msg, waName) {
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
           if (intent.followup) return sendText(phone, intent.followup);
         }
-        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
       }
       const drop_label = cleanLocationLabel(await reverseGeocode(loc.lat, loc.lon));
 
@@ -659,7 +669,7 @@ async function handleMessage(msg, waName) {
       }
       if (listId === 'EDIT_DROP') {
         await setState(phone, 'EDITING_DROP');
-        return sendLocationRequest(phone, `Where's your new drop destination? 🎯\n\nTap the button to search or share a pin, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Where's your new drop destination? 🎯\n\nTap the button to search or share a pin, or type coordinates e.g. 17.4239, 78.4738`);
       }
 
       if (buttonId === 'CONFIRM_NO')   return startOrResume(phone, user, waName, true);
@@ -721,7 +731,7 @@ async function handleMessage(msg, waName) {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
       if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
-        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), or type coordinates e.g. 17.4239, 78.4738`
       );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
@@ -729,7 +739,7 @@ async function handleMessage(msg, waName) {
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
         }
-        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
       }
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
@@ -743,7 +753,7 @@ async function handleMessage(msg, waName) {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
       if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
-        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), or type coordinates e.g. 17.4239, 78.4738`
       );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
@@ -751,7 +761,7 @@ async function handleMessage(msg, waName) {
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
         }
-        return sendLocationRequest(phone, `Share your new *drop destination* 🎯\n\nTap the button to search or share a pin, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Share your new *drop destination* 🎯\n\nTap the button to search or share a pin, or type coordinates e.g. 17.4239, 78.4738`);
       }
       const drop_label = cleanLocationLabel(await reverseGeocode(loc.lat, loc.lon));
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
@@ -765,7 +775,7 @@ async function handleMessage(msg, waName) {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
       if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
-        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), or type coordinates e.g. 17.4239, 78.4738`
       );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
@@ -774,7 +784,7 @@ async function handleMessage(msg, waName) {
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
           if (intent.followup) return sendText(phone, intent.followup);
         }
-        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
       }
       const pickup_label = await reverseGeocode(loc.lat, loc.lon);
       const updatedUser = await setState(phone, 'WAITING', {
@@ -792,7 +802,7 @@ async function handleMessage(msg, waName) {
       const loc = await resolveOrSearch(phone, msgType, locationLat, locationLon, rawText, listId);
       if (loc === 'SEARCHING') return;
       if (loc === 'APPLE_SHORT_LINK') return sendText(phone,
-        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), a full Apple Maps link, or a Google Maps link.`
+        `Apple Maps short links can't be read from our servers 😕\n\nPlease share a 📍 pin (tap 📎 → Location), or type coordinates e.g. 17.4239, 78.4738`
       );
       if (!loc) {
         if (msgType === 'text' && rawText.length > 0) {
@@ -801,7 +811,7 @@ async function handleMessage(msg, waName) {
           if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
           if (intent.followup) return sendText(phone, intent.followup);
         }
-        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
       }
       const drop_label = cleanLocationLabel(await reverseGeocode(loc.lat, loc.lon));
       const updatedUser = await setState(phone, 'WAITING', {
@@ -833,7 +843,7 @@ async function handleMessage(msg, waName) {
       if (buttonId === 'POOL_EDIT_DROP') {
         await cancelPendingRequestsFrom(user);
         await setState(phone, 'POOL_EDIT_DROP');
-        return sendLocationRequest(phone, `Where's your new drop destination? 🎯\n\nTap the button to search or share a pin, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Where's your new drop destination? 🎯\n\nTap the button to search or share a pin, or type coordinates e.g. 17.4239, 78.4738`);
       }
 
       if (listId.startsWith('match_')) {
@@ -873,7 +883,7 @@ async function handleMessage(msg, waName) {
       if (buttonId === 'POOL_EDIT_DROP') {
         await handleCancelSentRequest(phone, user);
         await setState(phone, 'POOL_EDIT_DROP');
-        return sendLocationRequest(phone, `Where's your new drop destination? 🎯\n\nTap the button to search or share a pin, or paste coordinates from Google Maps.`);
+        return sendLocationRequest(phone, `Where's your new drop destination? 🎯\n\nTap the button to search or share a pin, or type coordinates e.g. 17.4239, 78.4738`);
       }
       return sendText(phone, `Your request is pending ⏳\n\nType *CANCEL* to withdraw, or *EDIT* to update your trip.`);
     }
@@ -1658,15 +1668,14 @@ async function handleLLMIntent(intent, phone, user, waName, state) {
       return sendText(phone,
         `Share your new *pickup location* 📍\n\n` +
         `• Tap 📎 → Location → search or use current location\n` +
-        `• Or paste a Google Maps / Apple Maps link\n` +
-        `• Or type coordinates: *17.2403, 78.4294*`
+        `• Or type coordinates e.g. *17.4239, 78.4738*`
       );
     }
 
     case 'EDIT_DROP': {
       await cancelPendingRequestsFrom(user);
       await setState(phone, 'POOL_EDIT_DROP');
-      return sendLocationRequest(phone, `Where's your new drop destination? 🎯\n\nTap the button to search or share a pin, or paste coordinates from Google Maps.`);
+      return sendLocationRequest(phone, `Where's your new drop destination? 🎯\n\nTap the button to search or share a pin, or type coordinates e.g. 17.4239, 78.4738`);
     }
 
     case 'STATUS':  return sendStatus(phone);
