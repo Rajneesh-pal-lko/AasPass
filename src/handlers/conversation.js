@@ -241,18 +241,18 @@ async function sendShareNudge(phone) {
 
   // Message 1 — context (not forwardable)
   await sendText(phone,
-    `🤝 *Help grow the AasPass community!*\n\n` +
-    `The bigger our community, the faster everyone finds a match.\n\n` +
-    `👇 *Long press the next message → tap Forward* to share with friends who fly from Hyderabad:`
+    `🤝 *Enjoyed saving on your cab? Help others do the same!*\n\n` +
+    `The bigger the community, the faster everyone finds a match.\n\n` +
+    `👇 *Long press the next message → tap Forward* to share with anyone who travels to/from airports:`
   );
 
   // Message 2 — clean forwardable message (no intro, no "I am using")
   await sendText(phone,
-    `🚕 *Split your airport cab for free!*\n\n` +
-    `AasPass matches passengers heading the same way so you share one cab and split the fare.\n\n` +
-    `✅ No app download\n` +
+    `🚕 *Tired of paying full cab fare from the airport alone?*\n\n` +
+    `AasPass matches you with someone heading the same way — share one cab, split the fare.\n\n` +
+    `✅ No app download needed\n` +
     `✅ Works at Hyderabad, Bangalore & Delhi airports\n` +
-    `✅ Just WhatsApp\n\n` +
+    `✅ Everything on WhatsApp\n\n` +
     `Send *Hi* to get started 👇\n` +
     `${link}`
   );
@@ -640,8 +640,7 @@ async function handleMessage(msg, waName) {
         `Type *EDIT* to update your trip or *CANCEL* to leave the pool.`
       );
 
-      // Fire share nudge + match search in parallel (don't block each other)
-      sendShareNudge(phone).catch(() => {});
+      // Match search only — nudge is sent after trip completion, not while user is searching
       const matches = await findMatches(activeUser);
       await sendMatchResults(activeUser, matches);
       await notifyWaitingUsers(activeUser, matches);
@@ -925,13 +924,14 @@ async function handleMessage(msg, waName) {
       const feedback = text === 'SKIP' ? null : rawText;
       await saveRating(phone, user, feedback);
       await setState(phone, 'COMPLETED', { is_active: false, is_matched: false });
-      const websiteEnd = WEBSITE_URL ? `\n\n🌐 Check us out: ${WEBSITE_URL}` : '';
-      return sendText(phone,
+      const websiteEnd = WEBSITE_URL ? `\n\n🌐 ${WEBSITE_URL}` : '';
+      await sendText(phone,
         `All done! 🎉 Thanks for using AasPass.\n\n` +
-        `💬 Have suggestions or feedback? Type *FEEDBACK* anytime — we read every message.\n\n` +
-        `📢 Loved it? Share with friends who fly from Hyderabad — the more members, the faster everyone matches!\n\n` +
+        `💬 Have suggestions? Type *FEEDBACK* anytime.\n\n` +
         `See you on the next trip! 🚕${websiteEnd}`
       );
+      // Send share nudge after trip is complete — user is relaxed and happy, best moment to share
+      sendShareNudge(phone).catch(() => {});
     }
 
     // ── USER_FEEDBACK ─────────────────────────────────────────────────────────
