@@ -235,19 +235,26 @@ async function sendPreferredGenderPromptForProfileEdit(phone) {
 // ── share nudge ───────────────────────────────────────────────────────────────
 
 async function sendShareNudge(phone) {
-  const link = WA_NUMBER ? `https://wa.me/${WA_NUMBER}` : 'wa.me/AasPassNumber';
+  const link = WA_NUMBER ? `https://wa.me/${WA_NUMBER}` : null;
+  if (!link) return; // Don't send nudge if number not configured
   await sendText(
     phone,
-    `📢 *Help the community grow — help yourself get faster matches!*\n\n` +
-    `AasPass is brand new in Hyderabad. Right now every new member makes the pool bigger, ` +
-    `which means *you* find a match faster.\n\n` +
-    `Forward this to friends who fly from Hyderabad:\n\n` +
+    `💡 *More users = faster matches for you!*\n\n` +
+    `Know someone who flies from Hyderabad? Forward this:\n\n` +
     `━━━━━━━━━━━━━━━\n` +
-    `_Hey! I'm using AasPass 🚕 — a free WhatsApp service to split airport cabs in Hyderabad. No app, no signup, just WhatsApp. Save the number & text Hi:_\n` +
-    `*${link}*\n` +
-    `━━━━━━━━━━━━━━━\n\n` +
-    `Every friend you invite = faster matches for everyone 🙏`
+    `_Split your airport cab for free! No app needed — just WhatsApp._\n` +
+    `_Text *Hi* to get started: ${link}_\n` +
+    `━━━━━━━━━━━━━━━`
   );
+}
+
+// Clean up raw geocode labels — removes admin terms that leak into user-facing text
+function cleanLocationLabel(label) {
+  if (!label) return label;
+  return label
+    .replace(/\s*(mandal|district|taluk|tehsil|block|division|zone)\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 // ── other-city message ────────────────────────────────────────────────────────
@@ -599,7 +606,7 @@ async function handleMessage(msg, waName) {
         }
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or paste coordinates from Google Maps.`);
       }
-      const drop_label = await reverseGeocode(loc.lat, loc.lon);
+      const drop_label = cleanLocationLabel(await reverseGeocode(loc.lat, loc.lon));
 
       // Skip confirmation screen — go straight into the pool
       await syncProfileFields(phone, user);
@@ -746,7 +753,7 @@ async function handleMessage(msg, waName) {
         }
         return sendLocationRequest(phone, `Share your new *drop destination* 🎯\n\nTap the button to search or share a pin, or paste coordinates from Google Maps.`);
       }
-      const drop_label = await reverseGeocode(loc.lat, loc.lon);
+      const drop_label = cleanLocationLabel(await reverseGeocode(loc.lat, loc.lon));
       const updated = await setState(phone, 'ONBOARDING_CONFIRM', {
         drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
       });
@@ -796,7 +803,7 @@ async function handleMessage(msg, waName) {
         }
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or paste coordinates from Google Maps.`);
       }
-      const drop_label = await reverseGeocode(loc.lat, loc.lon);
+      const drop_label = cleanLocationLabel(await reverseGeocode(loc.lat, loc.lon));
       const updatedUser = await setState(phone, 'WAITING', {
         drop_lat: loc.lat, drop_long: loc.lon, drop_label, drop_zone: drop_label,
         search_started_at: new Date().toISOString(),
