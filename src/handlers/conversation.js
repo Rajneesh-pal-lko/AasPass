@@ -453,6 +453,32 @@ async function sendMyReferralCode(phone, user) {
   );
 }
 
+async function sendReferralInfo(phone, user) {
+  let code = user?.referral_code;
+  if (!code && user) {
+    code = await generateReferralCode(user.name || 'USR');
+    await upsertUser(phone, { referral_code: code });
+  }
+
+  const codeSection = code
+    ? `\n\n🎟️ *Your referral code: ${code}*\nShare this with friends. Type *MY CODE* to get a ready-to-forward invite message.`
+    : `\n\nType *MY CODE* to get your referral code and a ready-to-forward invite message.`;
+
+  return sendText(phone,
+    `*AasPass Referral Program* 🎁\n\n` +
+    `*How to refer:*\n` +
+    `1. Share your referral code with a friend who flies from RGIA\n` +
+    `2. They join AasPass and enter your code during signup\n` +
+    `3. They get *₹100* on their first cab search — win or not!\n` +
+    `4. Once they claim their reward, *you earn ₹50* 💰\n\n` +
+    `*How rewards are paid:*\n` +
+    `• We transfer directly to your UPI ID\n` +
+    `• Payouts processed within 24 hours of verification\n\n` +
+    `*Already waiting at the airport?* Type *CLAIM* to claim your own ₹100 reward if no match was found.` +
+    codeSection
+  );
+}
+
 async function getDailyClaimCount() {
   const today = new Date().toISOString().split('T')[0];
   const { data } = await supabase
@@ -2061,6 +2087,11 @@ async function handleLLMIntent(intent, phone, user, waName, state) {
     case 'ACCEPT':
     case 'DECLINE':
       return sendText(phone, `Please use the *Accept* / *Decline* buttons in the request message above.`);
+
+    case 'REFERRAL_INFO': {
+      const freshUser = await getUser(phone);
+      return sendReferralInfo(phone, freshUser);
+    }
 
     default: {
       // LLM returned UNKNOWN (off-topic, greeting, etc.) or unrecognised action.

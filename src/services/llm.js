@@ -51,10 +51,14 @@ const STATE_ACTIONS = {
   REPORTING:                   ['HELP'],
 };
 
+// Actions that are valid from every state — appended to STATE_ACTIONS at classify time
+const GLOBAL_ACTIONS = ['REFERRAL_INFO'];
+
 // ── System prompt (keep short → fewer tokens → cheaper) ──────────────────────
 
 function buildSystemPrompt(state) {
-  const actions = (STATE_ACTIONS[state] || ['HELP', 'UNKNOWN']).join(', ');
+  const stateSpecific = (STATE_ACTIONS[state] || ['HELP', 'UNKNOWN']).join(', ');
+  const actions = [...(STATE_ACTIONS[state] || ['HELP']), ...GLOBAL_ACTIONS, 'UNKNOWN'].join(', ');
   return `You are an intent classifier for AasPass, a WhatsApp cab-splitting app.
 User state: ${state}. Valid actions: ${actions}, UNKNOWN.
 
@@ -64,22 +68,23 @@ Rules:
 - Always pick the closest valid action. Only use UNKNOWN if truly off-topic.
 
 Intent mappings (use only actions listed as valid for current state):
-  START      ← "hi", "hello", "start", "begin", any greeting from IDLE/COMPLETED
-  CANCEL     ← "cancel", "stop", "quit", "exit", "go back", "start over", "nevermind"
-  CONFIRM    ← "yes", "confirm", "looks good", "ok", "proceed"
-  MATCHES    ← "any luck?", "found someone?", "show matches", "who's available", "options"
-  EDIT_PICKUP ← "change pickup", "update my start", "pickup is wrong", "edit where I'm starting"
-  EDIT_DROP  ← "change drop", "change destination", "going to X instead", "update my drop"
-  TRIP_DONE  ← "all done", "trip complete", "reached", "we made it", "finished"
+  START        ← "hi", "hello", "start", "begin", any greeting from IDLE/COMPLETED
+  CANCEL       ← "cancel", "stop", "quit", "exit", "go back", "start over", "nevermind"
+  CONFIRM      ← "yes", "confirm", "looks good", "ok", "proceed"
+  MATCHES      ← "any luck?", "found someone?", "show matches", "who's available", "options"
+  EDIT_PICKUP  ← "change pickup", "update my start", "pickup is wrong", "edit where I'm starting"
+  EDIT_DROP    ← "change drop", "change destination", "going to X instead", "update my drop"
+  TRIP_DONE    ← "all done", "trip complete", "reached", "we made it", "finished"
   REPORT_ISSUE ← "problem", "issue", "complaint", "he was rude", "report"
-  EXTEND_YES ← "yes keep looking", "extend", "5 more minutes", "keep searching"
-  EXTEND_NO  ← "no stop", "give up", "forget it", "stop searching"
-  ACCEPT     ← "accept", "yes I'll share", "sounds good"
-  DECLINE    ← "decline", "no thanks", "reject", "not interested"
-  STATUS     ← "what's my status", "where am I", "my details"
-  HELP       ← "help", "what can I do", "commands", "options"
-  RESTART    ← "restart", "start fresh", "reset"
-  UNKNOWN    ← off-topic questions, typos with no clear intent, location names (NOT commands)`;
+  EXTEND_YES   ← "yes keep looking", "extend", "5 more minutes", "keep searching"
+  EXTEND_NO    ← "no stop", "give up", "forget it", "stop searching"
+  ACCEPT       ← "accept", "yes I'll share", "sounds good"
+  DECLINE      ← "decline", "no thanks", "reject", "not interested"
+  STATUS       ← "what's my status", "where am I", "my details"
+  HELP         ← "help", "what can I do", "commands", "options"
+  RESTART      ← "restart", "start fresh", "reset"
+  REFERRAL_INFO ← "how does referral work", "how to refer", "referral details", "how do I invite friends", "what is referral", "how will I earn", "refer kaise kare", "referral kya hai", "how to get reward", "invite friend", "how do I get money", "tell me about referral", "referral program", "what is my code", "how to use referral", anything about referring others or earning rewards through referrals
+  UNKNOWN      ← off-topic questions, typos with no clear intent, location names (NOT commands)`;
 }
 
 // ── OpenAI call ───────────────────────────────────────────────────────────────
@@ -168,7 +173,7 @@ async function detectIntent(message, state) {
       if (!jsonMatch) throw new Error('No JSON in response');
 
       const parsed = JSON.parse(jsonMatch[0]);
-      const validActions = [...(STATE_ACTIONS[state] || []), 'UNKNOWN'];
+      const validActions = [...(STATE_ACTIONS[state] || []), ...GLOBAL_ACTIONS, 'UNKNOWN'];
 
       return {
         action:   validActions.includes(parsed.action) ? parsed.action : 'UNKNOWN',
