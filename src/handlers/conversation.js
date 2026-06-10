@@ -37,6 +37,7 @@ const HARD_KEYWORDS = new Set([
   'MATCHES', 'CANCEL', 'EDIT', 'DONE', 'ISSUE', 'BLOCK',
   'CONFIRM CANCEL', 'BACK', 'SKIP',
   'MY CODE', 'MYCODE', 'CLAIM',
+  'DELETE', 'DELETE ACCOUNT', 'CONFIRM DELETE',
 ]);
 
 // LLM actions that can cause irreversible state changes.
@@ -604,6 +605,18 @@ async function handleMessage(msg, waName) {
         `✅ UPI saved: *${upiId}*\n\nWe'll process your reward within 24 hours. 🙏`
       );
     }
+  }
+
+  // ── Account delete commands ───────────────────────────────────────────────
+  if (text === 'DELETE' || text === 'DELETE ACCOUNT' || text === 'CONFIRM DELETE') {
+    return sendDeleteConfirmation(phone);
+  }
+  if (buttonId === 'CONFIRM_DELETE') {
+    const deleteUser = await getUser(phone);
+    return handleAccountDelete(phone, deleteUser);
+  }
+  if (buttonId === 'CANCEL_DELETE') {
+    return sendText(phone, `No problem! Your account is safe. 👍`);
   }
 
   // ── LLM destructive action confirmation ──────────────────────────────────
@@ -1414,6 +1427,15 @@ async function startOrResume(phone, user, waName, forceRestart) {
     return sendAlreadyInQueueMsg(phone, user);
   }
 
+  // Previously deleted user coming back — update state to IDLE so they can restart cleanly
+  if (!forceRestart && user?.state === 'DELETED') {
+    await upsertUser(phone, { state: 'IDLE', updated_at: new Date().toISOString() });
+    if (user.name && user.gender) {
+      return sendWelcomeBack(phone, { ...user, state: 'IDLE' });
+    }
+    return sendNamePrompt(phone, waName);
+  }
+
   // Returning user with name + gender already set → welcome back screen
   if (!forceRestart && user?.name && user?.gender) {
     return sendWelcomeBack(phone, user);
@@ -1885,10 +1907,60 @@ async function sendHelp(phone) {
     `*CLAIM* — Claim ₹100 reward (if no match found)\n` +
     `*MY CODE* — Get your referral code + shareable message\n` +
     `*RESTART* — Start fresh\n` +
+    `*DELETE* — Deactivate your account\n` +
     `*STOP* — Unsubscribe\n` +
     `*HELP* — Show this list\n` +
     `\n─────────────────\n` +
     `*Need help or have a suggestion?*${contactLine}${websiteLine}`
+  );
+}
+
+async function sendDeleteConfirmation(phone) {
+  return sendButtons(phone,
+    `⚠️ *Delete your AasPass profile?*\n\n` +
+    `This will:\n` +
+    `• Remove you from the matching pool\n` +
+    `• Cancel any active requests\n` +
+    `• Deactivate your account\n\n` +
+    `Your data is kept securely. You can come back anytime by sending *hi*.`,
+    [
+      { id: 'CONFIRM_DELETE', title: '🗑 Yes, Delete' },
+      { id: 'CANCEL_DELETE',  title: '⬅️ Keep Account' },
+    ]
+  );
+}
+
+async function handleAccountDelete(phone, user) {
+  // Cancel any pending outbound match requests
+  if (user) await cancelPendingRequestsFrom(user);
+
+  // If currently matched, notify partner and return them to the pool
+  if (user?.is_matched && user?.matched_with) {
+    const { data: partner } = await supabase
+      .from('users').select('phone').eq('user_id', user.matched_with).single();
+    if (partner) {
+      await setState(partner.phone, 'WAITING', { is_matched: false, matched_with: null, pending_request_id: null });
+      await sendText(partner.phone,
+        `Your cab-split partner has left AasPass. You've been returned to the match pool! 🔄`
+      ).catch(() => {});
+    }
+  }
+
+  // Soft-delete: mark inactive, preserve all data
+  await upsertUser(phone, {
+    is_active:          false,
+    is_matched:         false,
+    matched_with:       null,
+    pending_request_id: null,
+    state:              'DELETED',
+    deleted_at:         new Date().toISOString(),
+    updated_at:         new Date().toISOString(),
+  });
+
+  return sendText(phone,
+    `✅ *Your profile has been deactivated.*\n\n` +
+    `You've been removed from the matching pool and any active requests have been cancelled.\n\n` +
+    `Miss us? Send *hi* anytime to come back. 👋`
   );
 }
 
