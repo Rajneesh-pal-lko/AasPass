@@ -29,13 +29,14 @@ const LOCATION_STATES = new Set([
 
 // States where the user's text IS free-form data input, not a command.
 // e.g. typing their name or rating feedback — bypass LLM entirely.
-const FREE_TEXT_STATES = new Set(['ONBOARDING_NAME', 'EDITING_NAME', 'RATING_FEEDBACK', 'PROFILE_EDIT_NAME', 'USER_FEEDBACK']);
+const FREE_TEXT_STATES = new Set(['ONBOARDING_NAME', 'EDITING_NAME', 'RATING_FEEDBACK', 'PROFILE_EDIT_NAME', 'USER_FEEDBACK', 'ONBOARDING_REFERRAL', 'REWARD_TICKET', 'REWARD_UPI']);
 
 // Exact-match keywords (UPPERCASED) that the state switch already handles directly.
 // Text matching these goes straight to the switch — no LLM needed.
 const HARD_KEYWORDS = new Set([
   'MATCHES', 'CANCEL', 'EDIT', 'DONE', 'ISSUE', 'BLOCK',
   'CONFIRM CANCEL', 'BACK', 'SKIP',
+  'MY CODE', 'MYCODE', 'CLAIM',
 ]);
 
 // LLM actions that can cause irreversible state changes.
@@ -171,10 +172,12 @@ async function sendNamePrompt(phone, waName) {
   const intro =
     `🚕 *Welcome to AasPass!*\n\n` +
     `We're building *Hyderabad's first* community of airport cab-splitters.\n\n` +
-    `The idea is simple — when you land at RGIA, find someone heading to a nearby destination. ` +
+    `The idea is simple — when you land at RGIA, find someone heading the same way. ` +
     `Split the cab, save ₹300-700+ every trip. No app needed — everything on WhatsApp.\n` +
     `${websiteLine}\n` +
-    `You're one of our *early members* 🌱 What should we call you?`;
+    `🌱 *Our community is brand new and growing.* The more people join, the faster everyone finds a match. ` +
+    `We need your help to spread the word — more details once you're set up!\n\n` +
+    `You're one of our *early members* 🎉 What should we call you?`;
 
   if (waName) {
     const displayName = truncate(waName, 20);
@@ -236,25 +239,27 @@ async function sendPreferredGenderPromptForProfileEdit(phone) {
 
 async function sendShareNudge(phone) {
   const number = WA_NUMBER ? String(WA_NUMBER).trim().replace(/\D/g, '') : null;
-  if (!number) return; // Don't send nudge if number not configured
+  if (!number) return;
   const link = `https://wa.me/${number}`;
 
-  // Message 1 — context (not forwardable)
+  const user = await getUser(phone);
+  const code = user?.referral_code || null;
+
   await sendText(phone,
     `🤝 *Enjoyed saving on your cab? Help others do the same!*\n\n` +
     `The bigger the community, the faster everyone finds a match.\n\n` +
-    `👇 *Long press the next message → tap Forward* to share with anyone who travels to/from airports:`
+    (code ? `💰 *Bonus:* When someone joins using your code *${code}*, you earn *₹50* automatically!\n\n` : '') +
+    `👇 *Long press the next message → tap Forward:*`
   );
 
-  // Message 2 — clean forwardable message (no intro, no "I am using")
   await sendText(phone,
     `🚕 *Tired of paying full cab fare from the airport alone?*\n\n` +
     `AasPass matches you with someone heading the same way — share one cab, split the fare.\n\n` +
     `✅ No app download needed\n` +
-    `✅ Works at Hyderabad, Bangalore & Delhi airports\n` +
-    `✅ Everything on WhatsApp\n\n` +
-    `Send *Hi* to get started 👇\n` +
-    `${link}`
+    `✅ Works at Hyderabad airport (RGIA)\n` +
+    `✅ Everything on WhatsApp\n` +
+    (code ? `✅ Use code *${code}* and get *₹100* on first search!\n` : '') +
+    `\nSend *Hi* to get started 👇\n${link}`
   );
 }
 
@@ -401,6 +406,147 @@ async function sendEditMenu(phone) {
   );
 }
 
+// ── referral & reward helpers ─────────────────────────────────────────────────
+
+const DAILY_REWARD_CAP = 10;
+
+async function generateReferralCode(name) {
+  const letters = (name || 'USR').replace(/[^a-zA-Z]/g, '').toUpperCase().slice(0, 3).padEnd(3, 'X');
+  for (let i = 0; i < 5; i++) {
+    const digits = String(Math.floor(1000 + Math.random() * 9000));
+    const code = letters + digits;
+    const { data } = await supabase.from('users').select('user_id').eq('referral_code', code).maybeSingle();
+    if (!data) return code;
+  }
+  return letters + String(Math.floor(10000 + Math.random() * 90000));
+}
+
+async function sendReferralPrompt(phone) {
+  await sendButtons(
+    phone,
+    `🎁 *Were you invited by a friend?*\n\nEnter their referral code to get ₹100 on your first cab search — or tap Skip to continue.`,
+    [{ id: 'SKIP_REFERRAL', title: '⏭️ Skip' }]
+  );
+}
+
+async function sendMyReferralCode(phone, user) {
+  if (!user) return sendText(phone, `Please send *Hi* to get started first!`);
+  let code = user.referral_code;
+  if (!code) {
+    code = await generateReferralCode(user.name || 'USR');
+    await upsertUser(phone, { referral_code: code });
+  }
+  const number = WA_NUMBER ? String(WA_NUMBER).trim().replace(/\D/g, '') : '';
+  const link   = number ? `https://wa.me/${number}` : '';
+  await sendText(phone,
+    `🎟️ *Your Referral Code: ${code}*\n\n` +
+    `Share this with friends who fly from Hyderabad airport.\n` +
+    `When they join and claim their first reward, *you get ₹50!*\n\n` +
+    `👇 *Long press the next message → Forward:*`
+  );
+  await sendText(phone,
+    `Hey! I use AasPass to split airport cabs in Hyderabad — saves ₹400 every trip 🚕\n\n` +
+    `Join with my code *${code}* and get *₹100* on your first cab search at RGIA — whether you find a match or not! 💰\n\n` +
+    `Send *Hi* to get started 👇\n` +
+    `${link}`
+  );
+}
+
+async function getDailyClaimCount() {
+  const today = new Date().toISOString().split('T')[0];
+  const { data } = await supabase
+    .from('daily_reward_claims').select('airport_claims').eq('claim_date', today).maybeSingle();
+  return data?.airport_claims || 0;
+}
+
+async function incrementDailyClaimCount() {
+  const today   = new Date().toISOString().split('T')[0];
+  const current = await getDailyClaimCount();
+  await supabase.from('daily_reward_claims').upsert(
+    { claim_date: today, airport_claims: current + 1, updated_at: new Date().toISOString() },
+    { onConflict: 'claim_date' }
+  );
+}
+
+async function handleRewardClaimStart(phone, user) {
+  if (!user) return sendText(phone, `Please send *Hi* to get started first!`);
+  const validStates = new Set(['WAITING', 'WAITING_RETRY', 'MATCH_SENT', 'MATCH_RECEIVED']);
+  if (!validStates.has(user.state)) {
+    return sendText(phone,
+      `To claim ₹100, first search for a cab from RGIA airport.\n\n` +
+      `Send *Hi* to start your search! 🚕`
+    );
+  }
+  if (user.last_reward_claimed_at) {
+    const daysSince = (Date.now() - new Date(user.last_reward_claimed_at)) / (1000 * 60 * 60 * 24);
+    if (daysSince < 30) {
+      const daysLeft = Math.ceil(30 - daysSince);
+      return sendText(phone,
+        `You claimed your reward recently 🙏\n\n` +
+        `Next claim available in *${daysLeft} day${daysLeft !== 1 ? 's' : ''}*.`
+      );
+    }
+  }
+  const count = await getDailyClaimCount();
+  if (count >= DAILY_REWARD_CAP) {
+    return sendText(phone,
+      `Today's reward slots are full 😢\n\n` +
+      `We have ${DAILY_REWARD_CAP} slots/day — this number will grow as our community does! 😄\n\n` +
+      `Try again tomorrow — slots reset at midnight.`
+    );
+  }
+  await setState(phone, 'REWARD_TICKET');
+  return sendButtons(phone,
+    `🎉 *You're eligible for ₹100 off your cab!*\n\n` +
+    `*Last step:* Send a photo of your flight ticket for validation 📸\n\n` +
+    `_Reward will be processed within 24 hours via UPI._`,
+    [{ id: 'SKIP_CLAIM', title: '❌ Cancel' }]
+  );
+}
+
+async function triggerReferralBonus(referredPhone, referralCode, referredName) {
+  try {
+    const { data: referrer } = await supabase
+      .from('users').select('*').eq('referral_code', referralCode).single();
+    if (!referrer) return;
+    await supabase.from('reward_claims').insert({
+      phone:           referrer.phone,
+      referred_by:     referredPhone,
+      claim_type:      'referral_bonus',
+      amount:          50,
+      ticket_received: true,
+      upi_id:          referrer.reward_upi || null,
+      status:          'pending',
+      created_at:      new Date().toISOString(),
+    });
+    const upiLine = referrer.reward_upi
+      ? `We'll send it to *${referrer.reward_upi}* within 24 hours. 💰`
+      : `Reply with *UPI yourname@bank* to receive it!\n_(e.g., UPI raj@paytm)_`;
+    await sendText(referrer.phone,
+      `🎉 *Referral bonus earned, ${referrer.name || 'friend'}!*\n\n` +
+      `*${referredName || 'Someone'}* you referred just completed their first cab search at RGIA! 🚕\n\n` +
+      `You've earned *₹50* as a thank you bonus.\n\n` +
+      upiLine
+    );
+  } catch (e) {
+    console.error('triggerReferralBonus error:', e.message);
+  }
+}
+
+async function sendNoMatchRewardOffer(phone, user) {
+  if (user.last_reward_claimed_at) {
+    const daysSince = (Date.now() - new Date(user.last_reward_claimed_at)) / (1000 * 60 * 60 * 24);
+    if (daysSince < 30) return; // already claimed recently — don't show offer
+  }
+  const count = await getDailyClaimCount();
+  if (count >= DAILY_REWARD_CAP) return; // slots full — don't tease
+  await sendText(phone,
+    `💡 *No match yet — but you won't go empty-handed!*\n\n` +
+    `As an early community member: type *CLAIM* to get *₹100 off your cab* via UPI — even without a match! 🎁\n\n` +
+    `_Valid once per 30 days. First ${DAILY_REWARD_CAP} claims per day only._`
+  );
+}
+
 // ── main dispatcher ───────────────────────────────────────────────────────────
 
 async function handleMessage(msg, waName) {
@@ -442,6 +588,23 @@ async function handleMessage(msg, waName) {
   // Restart — always fresh start
   if (text === 'RESTART' || text === 'START') return startOrResume(phone, user, waName, true);
   if (text === 'HI' || text === '' && state === 'IDLE') return startOrResume(phone, user, waName, false);
+
+  // ── Referral & reward global commands ────────────────────────────────────
+  if (text === 'MY CODE' || text === 'MYCODE') return sendMyReferralCode(phone, user);
+  if (text === 'CLAIM')                         return handleRewardClaimStart(phone, user);
+  // UPI capture from any state (for referral bonus recipients)
+  if (rawText.toUpperCase().startsWith('UPI ') && state !== 'REWARD_UPI') {
+    const upiId = rawText.slice(4).trim();
+    if (upiId.length >= 3) {
+      await upsertUser(phone, { reward_upi: upiId });
+      await supabase.from('reward_claims')
+        .update({ upi_id: upiId })
+        .eq('phone', phone).eq('status', 'pending');
+      return sendText(phone,
+        `✅ UPI saved: *${upiId}*\n\nWe'll process your reward within 24 hours. 🙏`
+      );
+    }
+  }
 
   // ── LLM destructive action confirmation ──────────────────────────────────
   // Handles Yes/No taps on confirmation buttons that were sent when the LLM
@@ -546,10 +709,16 @@ async function handleMessage(msg, waName) {
     case 'ONBOARDING_GENDER': {
       const genderMap = { GENDER_M: 'M', GENDER_F: 'F', GENDER_NB: 'NB', GENDER_NS: 'NS' };
       const gender = genderMap[listId] || 'NS';
-      // Skip gender preference — default to ANY, user can change in Profile later
       await upsertUser(phone, { gender, preferred_gender: 'ANY', updated_at: new Date().toISOString() });
-      await setState(phone, 'ONBOARDING_PICKUP');
-      return sendPickupPrompt(phone, false);
+      // Generate referral code if not already set
+      if (!user?.referral_code) {
+        const freshUser = await getUser(phone);
+        const code = await generateReferralCode(freshUser?.name || 'USR');
+        await upsertUser(phone, { referral_code: code });
+      }
+      // Ask if they were referred before starting cab search
+      await setState(phone, 'ONBOARDING_REFERRAL');
+      return sendReferralPrompt(phone);
     }
 
     // ── ONBOARDING: PREFERRED GENDER ─────────────────────────────────────────
@@ -557,6 +726,35 @@ async function handleMessage(msg, waName) {
       const prefMap = { PREF_ANY: 'ANY', PREF_M: 'M', PREF_F: 'F' };
       const preferred_gender = prefMap[buttonId] || 'ANY';
       await upsertUser(phone, { preferred_gender, updated_at: new Date().toISOString() });
+      await setState(phone, 'ONBOARDING_PICKUP');
+      return sendPickupPrompt(phone, false);
+    }
+
+    // ── ONBOARDING: REFERRAL CODE ─────────────────────────────────────────────
+    case 'ONBOARDING_REFERRAL': {
+      if (buttonId === 'SKIP_REFERRAL' || text === 'SKIP') {
+        await setState(phone, 'ONBOARDING_PICKUP');
+        return sendPickupPrompt(phone, false);
+      }
+      const code = rawText.trim().toUpperCase();
+      if (code.length >= 4) {
+        // Don't allow self-referral
+        if (code === user?.referral_code) {
+          await sendText(phone, `That's your own code! 😄 Enter a friend's code or tap Skip.`);
+          return sendReferralPrompt(phone);
+        }
+        const { data: referrer } = await supabase
+          .from('users').select('user_id, name').eq('referral_code', code).maybeSingle();
+        if (referrer) {
+          await upsertUser(phone, { referred_by: code });
+          await sendText(phone,
+            `🎉 You were invited by *${referrer.name || 'a friend'}*!\n\n` +
+            `You'll get *₹100* on your first cab search at RGIA — whether you find a match or not! 💰`
+          );
+        } else {
+          await sendText(phone, `Hmm, that code doesn't seem right. No worries — continuing without it!`);
+        }
+      }
       await setState(phone, 'ONBOARDING_PICKUP');
       return sendPickupPrompt(phone, false);
     }
@@ -644,6 +842,8 @@ async function handleMessage(msg, waName) {
       const matches = await findMatches(activeUser);
       await sendMatchResults(activeUser, matches);
       await notifyWaitingUsers(activeUser, matches);
+      // Offer ₹100 reward if no match found and user is eligible
+      if (matches.length === 0) sendNoMatchRewardOffer(phone, activeUser).catch(() => {});
       return;
     }
 
@@ -688,6 +888,7 @@ async function handleMessage(msg, waName) {
       const matches = await findMatches(activeUser);
       await sendMatchResults(activeUser, matches);
       await notifyWaitingUsers(activeUser, matches);
+      if (matches.length === 0) sendNoMatchRewardOffer(phone, activeUser).catch(() => {});
       return;
     }
 
@@ -1045,6 +1246,85 @@ async function handleMessage(msg, waName) {
       const updated = await getUser(phone);
       await setState(phone, 'PROFILE_VIEW');
       return sendProfileView(phone, updated);
+    }
+
+    // ── REWARD_TICKET ─────────────────────────────────────────────────────────
+    // Waiting for user to send flight ticket photo to validate ₹100 claim
+    case 'REWARD_TICKET': {
+      if (buttonId === 'SKIP_CLAIM' || text === 'CANCEL') {
+        await setState(phone, 'WAITING');
+        return sendText(phone, `No problem! You're still in the search pool. 🚕`);
+      }
+      if (msgType === 'image') {
+        // Final cap check before committing
+        const count = await getDailyClaimCount();
+        if (count >= DAILY_REWARD_CAP) {
+          await setState(phone, 'WAITING');
+          return sendText(phone,
+            `Sorry, today's reward slots just filled up 😢\n\n` +
+            `You're still in the match pool! Try *CLAIM* again tomorrow.`
+          );
+        }
+        await incrementDailyClaimCount();
+        const isFirstClaim = !user.last_reward_claimed_at;
+        await supabase.from('reward_claims').insert({
+          phone,
+          referred_by:     user.referred_by || null,
+          claim_type:      'airport_reward',
+          amount:          100,
+          ticket_received: true,
+          status:          'pending',
+          created_at:      new Date().toISOString(),
+        });
+        await upsertUser(phone, { last_reward_claimed_at: new Date().toISOString() });
+        // Fire referral bonus for referrer on first claim
+        if (isFirstClaim && user.referred_by) {
+          triggerReferralBonus(phone, user.referred_by, user.name).catch(() => {});
+        }
+        await setState(phone, 'REWARD_UPI');
+        return sendText(phone,
+          `✅ *Ticket received!*\n\n` +
+          `What's your UPI ID so we can send ₹100?\n\n` +
+          `Just type it here:\n` +
+          `_(e.g., rajneesh@paytm or 9876543210@upi)_`
+        );
+      }
+      return sendButtons(phone,
+        `📸 Please send a *photo of your flight ticket* to claim ₹100.\n\n` +
+        `Just screenshot your ticket/boarding pass and send it here.`,
+        [{ id: 'SKIP_CLAIM', title: '❌ Cancel' }]
+      );
+    }
+
+    // ── REWARD_UPI ────────────────────────────────────────────────────────────
+    // Capture UPI ID after ticket photo received
+    case 'REWARD_UPI': {
+      if (!rawText || rawText.length < 3) {
+        return sendText(phone,
+          `Please type your UPI ID to receive ₹100.\n\n` +
+          `_(e.g., rajneesh@paytm or 9876543210@upi)_`
+        );
+      }
+      const upiId = rawText.trim();
+      await upsertUser(phone, { reward_upi: upiId });
+      await supabase.from('reward_claims')
+        .update({ upi_id: upiId })
+        .eq('phone', phone).eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(1);
+      await setState(phone, 'WAITING');
+      const freshUser = await getUser(phone);
+      const code = freshUser?.referral_code || '';
+      await sendText(phone,
+        `🎉 *All done, ${user.name || 'friend'}!*\n\n` +
+        `We'll UPI *₹100* to *${upiId}* within 24 hours 💰\n\n` +
+        `You're still in the search pool — I'll ping you if a match arrives! 🚕\n\n` +
+        `─────────────────\n` +
+        `💡 *Earn ₹50 more:* Your referral code is *${code}*\n` +
+        `When a friend you invite claims their first reward, you get ₹50 automatically!\n\n` +
+        `Type *MY CODE* to get your shareable message.`
+      );
+      return;
     }
 
     default:
@@ -1602,6 +1882,8 @@ async function sendHelp(phone) {
     `*FEEDBACK* — Share your thoughts with us\n` +
     `*BLOCK* — Block current match (silent)\n` +
     `*STATUS* — Check your current status\n` +
+    `*CLAIM* — Claim ₹100 reward (if no match found)\n` +
+    `*MY CODE* — Get your referral code + shareable message\n` +
     `*RESTART* — Start fresh\n` +
     `*STOP* — Unsubscribe\n` +
     `*HELP* — Show this list\n` +
