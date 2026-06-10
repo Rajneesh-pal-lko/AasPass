@@ -52,7 +52,7 @@ const STATE_ACTIONS = {
 };
 
 // Actions that are valid from every state — appended to STATE_ACTIONS at classify time
-const GLOBAL_ACTIONS = ['REFERRAL_INFO'];
+const GLOBAL_ACTIONS = ['REFERRAL_INFO', 'SERVICE_FAQ'];
 
 // ── System prompt (keep short → fewer tokens → cheaper) ──────────────────────
 
@@ -84,6 +84,7 @@ Intent mappings (use only actions listed as valid for current state):
   HELP         ← "help", "what can I do", "commands", "options"
   RESTART      ← "restart", "start fresh", "reset"
   REFERRAL_INFO ← "how does referral work", "how to refer", "referral details", "how do I invite friends", "what is referral", "how will I earn", "refer kaise kare", "referral kya hai", "how to get reward", "invite friend", "how do I get money", "tell me about referral", "referral program", "what is my code", "how to use referral", anything about referring others or earning rewards through referrals
+  SERVICE_FAQ  ← any question about AasPass the service: "how does this work", "what is AasPass", "how many users", "which cities", "what does this app do", "how much does it cost", "what is the ₹1 fee", "how do you match people", "is this safe", "tell me about this service", "explain in detail", "how many people use this", "what airports", "my trips", "my history", "how many rides have I done", "what are my stats", any general service or account question not covered by other actions
   UNKNOWN      ← off-topic questions, typos with no clear intent, location names (NOT commands)`;
 }
 
@@ -198,4 +199,56 @@ async function detectIntent(message, state) {
   return { action: 'UNKNOWN', followup: null };
 }
 
-module.exports = { detectIntent };
+/**
+ * Answer a free-form user question using provided service context.
+ * Returns plain text formatted for WhatsApp (no JSON).
+ * @param {string} question       - raw user question
+ * @param {string} serviceContext - assembled knowledge block (public stats + user's own data)
+ */
+async function answerFAQ(question, serviceContext) {
+  const hasKey = PROVIDER === 'anthropic'
+    ? !!process.env.ANTHROPIC_API_KEY
+    : !!process.env.OPENAI_API_KEY;
+
+  if (!ENABLED || !hasKey) return null;
+
+  const systemPrompt =
+    `You are a helpful, friendly support assistant for AasPass — a WhatsApp-based airport cab-splitting service.\n` +
+    `Answer the user's question using ONLY the information in the context below.\n` +
+    `Rules:\n` +
+    `- Be conversational and clear. Use WhatsApp formatting (*bold* for key points, line breaks for lists).\n` +
+    `- If the user asked for detail, give detail. If they asked briefly, keep it brief.\n` +
+    `- Only share PUBLIC information or the user's OWN data from context. Never reveal other users' names, phones, or trip details.\n` +
+    `- If the answer isn't in the context, say: "I don't have that info — type HELP or contact our support team."\n` +
+    `- Do not make up numbers, prices, or features not mentioned in the context.\n\n` +
+    `Context:\n${serviceContext}`;
+
+  const userMessage = `Question: "${question.slice(0, 500)}"`;
+
+  try {
+    let raw;
+    if (PROVIDER === 'anthropic') {
+      const key = process.env.ANTHROPIC_API_KEY;
+      const res = await axios.post(
+        'https://api.anthropic.com/v1/messages',
+        { model: MODEL, max_tokens: 400, system: systemPrompt, messages: [{ role: 'user', content: userMessage }] },
+        { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 5000 }
+      );
+      raw = res.data.content[0].text.trim();
+    } else {
+      const key = process.env.OPENAI_API_KEY;
+      const res = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        { model: MODEL, temperature: 0.3, max_tokens: 400, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMessage }] },
+        { headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 5000 }
+      );
+      raw = res.data.choices[0].message.content.trim();
+    }
+    return raw;
+  } catch (e) {
+    console.error('answerFAQ LLM error:', e.message);
+    return null;
+  }
+}
+
+module.exports = { detectIntent, answerFAQ };

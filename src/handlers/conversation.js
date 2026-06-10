@@ -11,7 +11,7 @@ const WEBSITE_URL = process.env.SERVER_URL      || '';
 const { findMatches, sendMatchResults, sendMatchRequest } = require('../services/matching');
 const { reverseGeocode, forwardGeocode } = require('../services/geocoding');
 const { parseLocationFromText, isValidCoord } = require('../utils/locationParser');
-const { detectIntent } = require('../services/llm');
+const { detectIntent, answerFAQ } = require('../services/llm');
 
 // Search window: 10 min initial, 5 min extension
 const SEARCH_WINDOW_MS  = 10 * 60 * 1000;
@@ -479,6 +479,79 @@ async function sendReferralInfo(phone, user) {
   );
 }
 
+async function handleServiceFAQ(phone, user, question) {
+  // ── 1. Live public stats ──────────────────────────────────────────────────
+  const today = new Date().toISOString().split('T')[0];
+  const [
+    { count: totalUsers },
+    { count: activeNow },
+    { count: totalMatches },
+    { count: searchesToday },
+  ] = await Promise.all([
+    supabase.from('users').select('*', { count: 'exact', head: true }),
+    supabase.from('users').select('*', { count: 'exact', head: true }).eq('is_active', true).eq('is_matched', false),
+    supabase.from('confirmed_matches').select('*', { count: 'exact', head: true }),
+    supabase.from('users').select('*', { count: 'exact', head: true }).gte('updated_at', today),
+  ]);
+
+  // ── 2. User's own personal stats ─────────────────────────────────────────
+  let userTrips = 0;
+  if (user?.user_id) {
+    const { count } = await supabase
+      .from('confirmed_matches')
+      .select('*', { count: 'exact', head: true })
+      .or(`user1_id.eq.${user.user_id},user2_id.eq.${user.user_id}`);
+    userTrips = count || 0;
+  }
+
+  // ── 3. Build context block ────────────────────────────────────────────────
+  const serviceContext =
+    `=== AasPass Service Information ===\n` +
+    `What: A WhatsApp-based cab-splitting platform for airport passengers. No app download needed — everything happens on WhatsApp.\n` +
+    `How it works:\n` +
+    `  1. User shares pickup location (must be within 500m of airport)\n` +
+    `  2. Enters flight number and arrival time\n` +
+    `  3. Shares drop-off location\n` +
+    `  4. AasPass matches them with passengers on the same/nearby flight going to similar drop zones\n` +
+    `  5. Users send/accept a cab-split request\n` +
+    `  6. A small ₹1 verification payment unlocks each other's WhatsApp contact and drop coordinates\n` +
+    `  7. They coordinate directly and split the cab fare\n` +
+    `Airports supported: Hyderabad RGIA, Bangalore KIA, Delhi IGI\n` +
+    `Matching radius: Drop destinations within 7km qualify as a match\n` +
+    `Cost to use: Free. Only ₹1 verification payment when a match is accepted (prevents fake requests)\n` +
+    `Average savings: ~₹400 per person per trip (split a ~₹800 cab)\n` +
+    `Rewards program:\n` +
+    `  - New users who search at RGIA get ₹100 if no match is found (use CLAIM command)\n` +
+    `  - Refer a friend: they get ₹100, you get ₹50 when they claim\n` +
+    `  - Rewards paid to UPI within 24 hours of verification\n` +
+    `Key commands: HI/START, MATCHES, CANCEL, DONE, ISSUE, BLOCK, STATUS, MY CODE, CLAIM, FEEDBACK, DELETE, RESTART, STOP, HELP\n` +
+    `Privacy: Only your own WhatsApp number is shared — and only after both sides pay the ₹1 verification. No data is sold.\n` +
+    `\n=== Live Platform Stats (right now) ===\n` +
+    `Total registered users: ${totalUsers ?? 'N/A'}\n` +
+    `People actively searching for a match right now: ${activeNow ?? 'N/A'}\n` +
+    `Total successful cab-splits completed: ${totalMatches ?? 'N/A'}\n` +
+    `\n=== Your Account ===\n` +
+    (user
+      ? `Name: ${user.name || 'Not set'}\n` +
+        `Referral code: ${user.referral_code || 'Not generated yet — type MY CODE'}\n` +
+        `Referred by: ${user.referred_by || 'No one (joined directly)'}\n` +
+        `Cab-splits completed: ${userTrips}\n` +
+        `Current status: ${user.state || 'IDLE'}\n`
+      : `No account found. Send "hi" to get started.\n`
+    );
+
+  // ── 4. Ask the LLM to answer using this context ───────────────────────────
+  const answer = await answerFAQ(question, serviceContext);
+
+  if (!answer) {
+    return sendText(phone,
+      `I couldn't look that up right now. Type *HELP* to see all commands, or contact our support team.`
+    );
+  }
+
+  return sendText(phone, answer);
+}
+
 async function getDailyClaimCount() {
   const today = new Date().toISOString().split('T')[0];
   const { data } = await supabase
@@ -709,7 +782,7 @@ async function handleMessage(msg, waName) {
         // Store action and ask user to confirm before executing
         return sendConfirmationPrompt(phone, intent.action, user);
       }
-      return handleLLMIntent(intent, phone, user, waName, state);
+      return handleLLMIntent(intent, phone, user, waName, state, rawText);
     }
     // UNKNOWN → fall through so the state switch can give a context-aware hint
   }
@@ -813,7 +886,7 @@ async function handleMessage(msg, waName) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
-          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state, rawText);
           if (intent.followup) return sendText(phone, intent.followup);
         }
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
@@ -848,7 +921,7 @@ async function handleMessage(msg, waName) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
-          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state, rawText);
           if (intent.followup) return sendText(phone, intent.followup);
         }
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
@@ -976,7 +1049,7 @@ async function handleMessage(msg, waName) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
-          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state, rawText);
         }
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
       }
@@ -998,7 +1071,7 @@ async function handleMessage(msg, waName) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
-          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state, rawText);
         }
         return sendLocationRequest(phone, `Share your new *drop destination* 🎯\n\nTap the button to search or share a pin, or type coordinates e.g. 17.4239, 78.4738`);
       }
@@ -1020,7 +1093,7 @@ async function handleMessage(msg, waName) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
-          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state, rawText);
           if (intent.followup) return sendText(phone, intent.followup);
         }
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *pickup location* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
@@ -1047,7 +1120,7 @@ async function handleMessage(msg, waName) {
         if (msgType === 'text' && rawText.length > 0) {
           const intent = await detectIntent(rawText, state);
           console.log(`🤖 LLM [${state}] "${rawText}" → ${intent.action}`);
-          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state);
+          if (intent.action !== 'UNKNOWN') return handleLLMIntent(intent, phone, user, waName, state, rawText);
           if (intent.followup) return sendText(phone, intent.followup);
         }
         return sendLocationRequest(phone, `Couldn't find that location 😕\n\nShare your *drop destination* using the button below, or type coordinates e.g. 17.4239, 78.4738`);
@@ -2024,7 +2097,7 @@ async function sendStatus(phone) {
 // Called from the default case when raw text doesn't match any known command.
 // Maps LLM action strings → existing handler functions.
 
-async function handleLLMIntent(intent, phone, user, waName, state) {
+async function handleLLMIntent(intent, phone, user, waName, state, rawText = '') {
   const { action, followup } = intent;
 
   switch (action) {
@@ -2091,6 +2164,11 @@ async function handleLLMIntent(intent, phone, user, waName, state) {
     case 'REFERRAL_INFO': {
       const freshUser = await getUser(phone);
       return sendReferralInfo(phone, freshUser);
+    }
+
+    case 'SERVICE_FAQ': {
+      const freshUser = await getUser(phone);
+      return handleServiceFAQ(phone, freshUser, rawText);
     }
 
     default: {
