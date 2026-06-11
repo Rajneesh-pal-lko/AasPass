@@ -23,9 +23,10 @@ function startCleanupJob() {
     await cleanupStaleBufferRows();
   });
 
-  // Runs daily at 3 AM — purge error logs older than 90 days
+  // Runs daily at 3 AM — purge error logs + anonymise deletion-pending users
   cron.schedule('0 3 * * *', async () => {
     await cleanupOldErrorLogs();
+    await anonymisePendingDeletions();
   });
 
   console.log('Cleanup cron started (every 2 min + every 10 min + daily 3am) 🧹');
@@ -173,6 +174,50 @@ async function expirePendingMessages() {
 async function cleanupStaleBufferRows() {
   const { data, error } = await supabase.rpc('cleanup_stale_buffer_rows', { max_age_seconds: 60 });
   if (!error && data > 0) console.log(`Cleanup: cleared ${data} stale buffer row(s)`);
+}
+
+// ── Retention: anonymise users 30 days after deletion request ─────────────────
+// Personal data is nulled. Phone + referral_code + reward_claims are kept:
+//   - phone       → needed to prevent re-registration reward abuse
+//   - referral_code → other users' referred_by may reference it (pending payouts)
+
+async function anonymisePendingDeletions() {
+  try {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: due } = await supabase
+      .from('users')
+      .select('user_id, phone')
+      .eq('state', 'PENDING_DELETION')
+      .lt('deletion_requested_at', cutoff);
+
+    if (!due?.length) return;
+
+    for (const user of due) {
+      await supabase.from('users').update({
+        name:             null,
+        gender:           null,
+        preferred_gender: null,
+        departure_lat:    null,
+        departure_long:   null,
+        departure_airport:null,
+        drop_lat:         null,
+        drop_long:        null,
+        drop_zone:        null,
+        drop_label:       null,
+        pickup_label:     null,
+        flight_number:    null,
+        arrival_time:     null,
+        state:            'ANONYMISED',
+        is_active:        false,
+        updated_at:       new Date().toISOString(),
+      }).eq('user_id', user.user_id);
+    }
+
+    console.log(`Cleanup: anonymised ${due.length} user(s) past 30-day deletion hold`);
+  } catch (e) {
+    console.error('Cleanup: anonymisePendingDeletions error:', e.message);
+    logError({ severity: 'ERROR', type: 'CLEANUP', operation: 'anonymisePendingDeletions', message: e.message, error: e }).catch(() => {});
+  }
 }
 
 // ── Retention: purge error_logs older than 90 days ────────────────────────────

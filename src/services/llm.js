@@ -52,7 +52,7 @@ const STATE_ACTIONS = {
 };
 
 // Actions that are valid from every state — appended to STATE_ACTIONS at classify time
-const GLOBAL_ACTIONS = ['REFERRAL_INFO', 'SERVICE_FAQ'];
+const GLOBAL_ACTIONS = ['REFERRAL_INFO', 'SERVICE_FAQ', 'STOP_SEARCHING', 'UNSUBSCRIBE', 'DELETE_ACCOUNT'];
 
 // ── System prompt (keep short → fewer tokens → cheaper) ──────────────────────
 
@@ -84,8 +84,11 @@ Intent mappings (use only actions listed as valid for current state):
   HELP         ← "help", "what can I do", "commands", "options"
   RESTART      ← "restart", "start fresh", "reset"
   REFERRAL_INFO ← "how does referral work", "how to refer", "referral details", "how do I invite friends", "what is referral", "how will I earn", "refer kaise kare", "referral kya hai", "how to get reward", "invite friend", "how do I get money", "tell me about referral", "referral program", "what is my code", "how to use referral", anything about referring others or earning rewards through referrals
-  SERVICE_FAQ  ← any question about AasPass the service: "how does this work", "what is AasPass", "how many users", "which cities", "what does this app do", "how much does it cost", "what is the ₹1 fee", "how do you match people", "is this safe", "tell me about this service", "explain in detail", "how many people use this", "what airports", "my trips", "my history", "how many rides have I done", "what are my stats", any general service or account question not covered by other actions
-  UNKNOWN      ← off-topic questions, typos with no clear intent, location names (NOT commands)`;
+  SERVICE_FAQ    ← any question about AasPass the service: "how does this work", "what is AasPass", "how many users", "which cities", "what does this app do", "how much does it cost", "how do you match people", "is this safe", "tell me about this service", "explain in detail", "how many people use this", "what airports", "my trips", "my history", "how many rides have I done", "what are my stats", any general service or account question not covered by other actions
+  STOP_SEARCHING ← "stop searching", "leave pool", "stop looking", "remove me from search", "exit queue", "I want to stop searching", "take me out of the pool"
+  UNSUBSCRIBE    ← "unsubscribe", "deactivate my account", "I don't want to use this anymore", "disable my account", "remove my account", "I want to leave permanently", "deactivate me"
+  DELETE_ACCOUNT ← "delete my data", "delete my account", "remove all my data", "erase me", "I want my data deleted", "data deletion", "right to be forgotten"
+  UNKNOWN        ← off-topic questions, typos with no clear intent, location names (NOT commands)`;
 }
 
 // ── OpenAI call ───────────────────────────────────────────────────────────────

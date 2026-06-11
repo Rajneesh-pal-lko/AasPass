@@ -37,7 +37,9 @@ const HARD_KEYWORDS = new Set([
   'MATCHES', 'CANCEL', 'EDIT', 'DONE', 'ISSUE', 'BLOCK',
   'CONFIRM CANCEL', 'BACK', 'SKIP',
   'MY CODE', 'MYCODE', 'CLAIM',
-  'DELETE', 'DELETE ACCOUNT', 'CONFIRM DELETE',
+  'STOP', 'STOP SEARCHING',
+  'UNSUBSCRIBE', 'CONFIRM UNSUBSCRIBE',
+  'DELETE', 'DELETE MY DATA', 'CONFIRM DELETION', 'CANCEL DELETION',
 ]);
 
 // LLM actions that can cause irreversible state changes.
@@ -674,10 +676,6 @@ async function handleMessage(msg, waName) {
   const rawText = (msg.text?.body || '').trim();
 
   // ── Global commands (work from any state) ──
-  if (text === 'STOP') {
-    await upsertUser(phone, { is_active: false, state: 'IDLE' });
-    return sendText(phone, `You've been removed from AasPass. Send "hi" anytime to come back. 👋`);
-  }
   if (text === 'HELP')     return sendHelp(phone);
   if (text === 'STATUS')   return sendStatus(phone);
   if (text === 'FEEDBACK') return sendFeedbackPrompt(phone);
@@ -729,16 +727,33 @@ async function handleMessage(msg, waName) {
     }
   }
 
-  // ── Account delete commands ───────────────────────────────────────────────
-  if (text === 'DELETE' || text === 'DELETE ACCOUNT' || text === 'CONFIRM DELETE') {
-    return sendDeleteConfirmation(phone);
+  // ── STOP SEARCHING — leave the matching pool, account stays active ──────────
+  if (text === 'STOP' || text === 'STOP SEARCHING') {
+    return handleStopSearching(phone, user);
   }
-  if (buttonId === 'CONFIRM_DELETE') {
-    const deleteUser = await getUser(phone);
-    return handleAccountDelete(phone, deleteUser);
+
+  // ── UNSUBSCRIBE — deactivate account, data preserved forever ─────────────
+  if (text === 'UNSUBSCRIBE') {
+    return sendUnsubscribeConfirmation(phone);
   }
-  if (buttonId === 'CANCEL_DELETE') {
+  if (buttonId === 'CONFIRM_UNSUBSCRIBE') {
+    const unsubUser = await getUser(phone);
+    return handleUnsubscribe(phone, unsubUser);
+  }
+  if (buttonId === 'CANCEL_UNSUBSCRIBE') {
     return sendText(phone, `No problem! Your account is safe. 👍`);
+  }
+
+  // ── DELETE — 30-day hold, then data is anonymised ────────────────────────
+  if (text === 'DELETE' || text === 'DELETE MY DATA') {
+    return sendDeletionRequestConfirmation(phone, user);
+  }
+  if (buttonId === 'CONFIRM_DELETION') {
+    const delUser = await getUser(phone);
+    return handleDeletionRequest(phone, delUser);
+  }
+  if (buttonId === 'CANCEL_DELETION_BTN' || text === 'CANCEL DELETION') {
+    return handleCancelDeletion(phone, user);
   }
 
   // ── LLM destructive action confirmation ──────────────────────────────────
@@ -1554,10 +1569,24 @@ async function startOrResume(phone, user, waName, forceRestart) {
     return sendAlreadyInQueueMsg(phone, user);
   }
 
-  // Previously deleted user coming back — update state to IDLE so they can restart cleanly
-  if (!forceRestart && user?.state === 'DELETED') {
+  // Unsubscribed or legacy DELETED user coming back — restore to IDLE
+  if (!forceRestart && (user?.state === 'UNSUBSCRIBED' || user?.state === 'DELETED')) {
     await upsertUser(phone, { state: 'IDLE', updated_at: new Date().toISOString() });
     if (user.name && user.gender) {
+      return sendWelcomeBack(phone, { ...user, state: 'IDLE' });
+    }
+    return sendNamePrompt(phone, waName);
+  }
+
+  // User has a pending deletion — show reminder but let them continue normally
+  if (!forceRestart && user?.state === 'PENDING_DELETION' && user?.deletion_requested_at) {
+    const deletionDate = new Date(new Date(user.deletion_requested_at).getTime() + 30 * 24 * 60 * 60 * 1000);
+    const dateStr = deletionDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+    await upsertUser(phone, { state: 'IDLE', updated_at: new Date().toISOString() });
+    if (user.name && user.gender) {
+      await sendText(phone,
+        `⚠️ Reminder: Your data deletion is scheduled for *${dateStr}*.\n\nType *CANCEL DELETION* to keep your account.`
+      );
       return sendWelcomeBack(phone, { ...user, state: 'IDLE' });
     }
     return sendNamePrompt(phone, waName);
@@ -2034,61 +2063,130 @@ async function sendHelp(phone) {
     `*CLAIM* — Claim ₹100 reward (if no match found)\n` +
     `*MY CODE* — Get your referral code + shareable message\n` +
     `*RESTART* — Start fresh\n` +
-    `*DELETE* — Deactivate your account\n` +
-    `*STOP* — Unsubscribe\n` +
+    `*STOP SEARCHING* — Leave the matching pool\n` +
+    `*UNSUBSCRIBE* — Deactivate your account\n` +
+    `*DELETE* — Request permanent data deletion (30-day hold)\n` +
     `*HELP* — Show this list\n` +
     `\n─────────────────\n` +
     `*Need help or have a suggestion?*${contactLine}${websiteLine}`
   );
 }
 
-async function sendDeleteConfirmation(phone) {
-  return sendButtons(phone,
-    `⚠️ *Delete your AasPass profile?*\n\n` +
-    `This will:\n` +
-    `• Remove you from the matching pool\n` +
-    `• Cancel any active requests\n` +
-    `• Deactivate your account\n\n` +
-    `Your data is kept securely. You can come back anytime by sending *hi*.`,
-    [
-      { id: 'CONFIRM_DELETE', title: '🗑 Yes, Delete' },
-      { id: 'CANCEL_DELETE',  title: '⬅️ Keep Account' },
-    ]
-  );
-}
+// ── Stop searching (leave pool, account stays active) ────────────────────────
 
-async function handleAccountDelete(phone, user) {
-  // Cancel any pending outbound match requests
+async function handleStopSearching(phone, user) {
   if (user) await cancelPendingRequestsFrom(user);
-
-  // If currently matched, notify partner and return them to the pool
   if (user?.is_matched && user?.matched_with) {
     const { data: partner } = await supabase
       .from('users').select('phone').eq('user_id', user.matched_with).single();
     if (partner) {
       await setState(partner.phone, 'WAITING', { is_matched: false, matched_with: null, pending_request_id: null });
       await sendText(partner.phone,
-        `Your cab-split partner has left AasPass. You've been returned to the match pool! 🔄`
+        `Your cab-split partner has left the search. You're back in the pool! 🔄`
       ).catch(() => {});
     }
   }
-
-  // Soft-delete: mark inactive, preserve all data
   await upsertUser(phone, {
-    is_active:          false,
-    is_matched:         false,
-    matched_with:       null,
-    pending_request_id: null,
-    state:              'DELETED',
-    deleted_at:         new Date().toISOString(),
-    updated_at:         new Date().toISOString(),
+    is_active: false, is_matched: false, matched_with: null, pending_request_id: null,
+    state: 'IDLE', updated_at: new Date().toISOString(),
   });
+  return sendText(phone, `You've left the matching pool. Send *hi* to search again anytime. 👋`);
+}
 
+// ── Unsubscribe (deactivate account, data + referral code preserved forever) ─
+
+async function sendUnsubscribeConfirmation(phone) {
+  return sendButtons(phone,
+    `⚠️ *Deactivate your AasPass account?*\n\n` +
+    `This will:\n` +
+    `• Remove you from the matching pool\n` +
+    `• Cancel any active requests\n` +
+    `• Deactivate your account\n\n` +
+    `Your data is kept safely. You can come back anytime by sending *hi*.\n` +
+    `Your referral earnings will still be paid out. 💰`,
+    [
+      { id: 'CONFIRM_UNSUBSCRIBE', title: '✅ Yes, Deactivate' },
+      { id: 'CANCEL_UNSUBSCRIBE',  title: '⬅️ Keep Account'    },
+    ]
+  );
+}
+
+async function handleUnsubscribe(phone, user) {
+  if (user) await cancelPendingRequestsFrom(user);
+  if (user?.is_matched && user?.matched_with) {
+    const { data: partner } = await supabase
+      .from('users').select('phone').eq('user_id', user.matched_with).single();
+    if (partner) {
+      await setState(partner.phone, 'WAITING', { is_matched: false, matched_with: null, pending_request_id: null });
+      await sendText(partner.phone,
+        `Your cab-split partner has left AasPass. You're back in the pool! 🔄`
+      ).catch(() => {});
+    }
+  }
+  await upsertUser(phone, {
+    is_active: false, is_matched: false, matched_with: null, pending_request_id: null,
+    state: 'UNSUBSCRIBED', unsubscribed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  });
   return sendText(phone,
-    `✅ *Your profile has been deactivated.*\n\n` +
-    `You've been removed from the matching pool and any active requests have been cancelled.\n\n` +
+    `✅ *Your account has been deactivated.*\n\n` +
+    `You've been removed from the matching pool. Your data is safe and your referral earnings will still be paid.\n\n` +
     `Miss us? Send *hi* anytime to come back. 👋`
   );
+}
+
+// ── Delete (30-day hold, then personal data anonymised) ──────────────────────
+
+async function sendDeletionRequestConfirmation(phone, user) {
+  const deletionDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  const dateStr = deletionDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  return sendButtons(phone,
+    `🗑 *Request permanent data deletion?*\n\n` +
+    `Your personal data (name, gender, locations) will be permanently removed on *${dateStr}* (30 days from now).\n\n` +
+    `We keep your phone number and referral code after deletion to:\n` +
+    `• Pay any pending referral earnings 💰\n` +
+    `• Prevent duplicate reward claims\n\n` +
+    `You can cancel this request anytime before ${dateStr} by sending *CANCEL DELETION*.`,
+    [
+      { id: 'CONFIRM_DELETION',    title: '🗑 Yes, Delete Data' },
+      { id: 'CANCEL_DELETION_BTN', title: '⬅️ Keep My Data'    },
+    ]
+  );
+}
+
+async function handleDeletionRequest(phone, user) {
+  if (user) await cancelPendingRequestsFrom(user);
+  if (user?.is_matched && user?.matched_with) {
+    const { data: partner } = await supabase
+      .from('users').select('phone').eq('user_id', user.matched_with).single();
+    if (partner) {
+      await setState(partner.phone, 'WAITING', { is_matched: false, matched_with: null, pending_request_id: null });
+      await sendText(partner.phone,
+        `Your cab-split partner has left AasPass. You're back in the pool! 🔄`
+      ).catch(() => {});
+    }
+  }
+  const now = new Date().toISOString();
+  const deletionDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  const dateStr = deletionDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  await upsertUser(phone, {
+    is_active: false, is_matched: false, matched_with: null, pending_request_id: null,
+    state: 'PENDING_DELETION', deletion_requested_at: now, updated_at: now,
+  });
+  return sendText(phone,
+    `✅ *Deletion request received.*\n\n` +
+    `Your personal data will be permanently removed on *${dateStr}*.\n\n` +
+    `Changed your mind? Type *CANCEL DELETION* anytime before that date to keep your account. 👋`
+  );
+}
+
+async function handleCancelDeletion(phone, user) {
+  if (user?.state !== 'PENDING_DELETION') {
+    return sendText(phone, `You don't have a pending deletion request.`);
+  }
+  await upsertUser(phone, {
+    state: 'IDLE', deletion_requested_at: null, updated_at: new Date().toISOString(),
+  });
+  return sendText(phone, `✅ *Deletion cancelled.* Your account and data are safe. Send *hi* to continue. 👍`);
 }
 
 async function sendFeedbackPrompt(phone) {
@@ -2197,6 +2295,20 @@ async function handleLLMIntent(intent, phone, user, waName, state, rawText = '')
     case 'SERVICE_FAQ': {
       const freshUser = await getUser(phone);
       return handleServiceFAQ(phone, freshUser, rawText);
+    }
+
+    case 'STOP_SEARCHING': {
+      const freshUser = await getUser(phone);
+      return handleStopSearching(phone, freshUser);
+    }
+
+    case 'UNSUBSCRIBE': {
+      return sendUnsubscribeConfirmation(phone);
+    }
+
+    case 'DELETE_ACCOUNT': {
+      const freshUser = await getUser(phone);
+      return sendDeletionRequestConfirmation(phone, freshUser);
     }
 
     default: {
