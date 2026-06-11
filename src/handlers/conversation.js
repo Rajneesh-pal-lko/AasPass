@@ -438,7 +438,8 @@ async function sendMyReferralCode(phone, user) {
     await upsertUser(phone, { referral_code: code });
   }
   const number = WA_NUMBER ? String(WA_NUMBER).trim().replace(/\D/g, '') : '';
-  const link   = number ? `https://wa.me/${number}` : '';
+  // ?text=Hi%20CODE pre-fills the message so the bot instantly recognises the referral
+  const link   = number ? `https://wa.me/${number}?text=Hi%20${code}` : '';
   await sendText(phone,
     `🎟️ *Your Referral Code: ${code}*\n\n` +
     `Share this with friends who fly from Hyderabad airport.\n` +
@@ -448,7 +449,7 @@ async function sendMyReferralCode(phone, user) {
   await sendText(phone,
     `Hey! I use AasPass to split airport cabs in Hyderabad — saves ₹400 every trip 🚕\n\n` +
     `Join with my code *${code}* and get *₹100* on your first cab search at RGIA — whether you find a match or not! 💰\n\n` +
-    `Send *Hi* to get started 👇\n` +
+    `Tap the link to get started 👇\n` +
     `${link}`
   );
 }
@@ -469,12 +470,12 @@ async function sendReferralInfo(phone, user) {
     `*How to refer:*\n` +
     `1. Share your referral code with a friend who flies from RGIA\n` +
     `2. They join AasPass and enter your code during signup\n` +
-    `3. They get *₹100* on their first cab search — win or not!\n` +
+    `3. They get *₹100* on their first cab search — match or not!\n` +
     `4. Once they claim their reward, *you earn ₹50* 💰\n\n` +
     `*How rewards are paid:*\n` +
-    `• We transfer directly to your UPI ID\n` +
+    `• Transferred directly to your UPI ID\n` +
     `• Payouts processed within 24 hours of verification\n\n` +
-    `*Already waiting at the airport?* Type *CLAIM* to claim your own ₹100 reward if no match was found.` +
+    `*No match found at the airport?* Type *CLAIM* — share your ticket photo + UPI to get *₹100*.` +
     codeSection
   );
 }
@@ -509,23 +510,22 @@ async function handleServiceFAQ(phone, user, question) {
     `=== AasPass Service Information ===\n` +
     `What: A WhatsApp-based cab-splitting platform for airport passengers. No app download needed — everything happens on WhatsApp.\n` +
     `How it works:\n` +
-    `  1. User shares pickup location (must be within 500m of airport)\n` +
-    `  2. Enters flight number and arrival time\n` +
-    `  3. Shares drop-off location\n` +
-    `  4. AasPass matches them with passengers on the same/nearby flight going to similar drop zones\n` +
-    `  5. Users send/accept a cab-split request\n` +
-    `  6. A small ₹1 verification payment unlocks each other's WhatsApp contact and drop coordinates\n` +
-    `  7. They coordinate directly and split the cab fare\n` +
+    `  1. Share your pickup location (must be within 500m of the airport)\n` +
+    `  2. Share your drop-off location\n` +
+    `  3. AasPass matches you with passengers on the same or nearby flight going to similar drop zones\n` +
+    `  4. Send or accept a cab-split request\n` +
+    `  5. Coordinate directly and split the cab fare!\n` +
+    `  Note: If you didn't find a match, you can claim ₹100 — share your airport ticket photo for verification + your UPI ID (use CLAIM command)\n` +
     `Airports supported: Hyderabad RGIA, Bangalore KIA, Delhi IGI\n` +
     `Matching radius: Drop destinations within 7km qualify as a match\n` +
-    `Cost to use: Free. Only ₹1 verification payment when a match is accepted (prevents fake requests)\n` +
+    `Cost to use: Completely free to use\n` +
     `Average savings: ~₹400 per person per trip (split a ~₹800 cab)\n` +
     `Rewards program:\n` +
-    `  - New users who search at RGIA get ₹100 if no match is found (use CLAIM command)\n` +
-    `  - Refer a friend: they get ₹100, you get ₹50 when they claim\n` +
+    `  - If no match is found at RGIA, claim ₹100 reward via the CLAIM command (send ticket photo + UPI for verification)\n` +
+    `  - Refer a friend: they get ₹100 on their first search, you get ₹50 when they claim\n` +
     `  - Rewards paid to UPI within 24 hours of verification\n` +
     `Key commands: HI/START, MATCHES, CANCEL, DONE, ISSUE, BLOCK, STATUS, MY CODE, CLAIM, FEEDBACK, DELETE, RESTART, STOP, HELP\n` +
-    `Privacy: Only your own WhatsApp number is shared — and only after both sides pay the ₹1 verification. No data is sold.\n` +
+    `Privacy: Your WhatsApp number is only shared with your matched partner after both have connected. No data is sold.\n` +
     `\n=== Live Platform Stats (right now) ===\n` +
     `Total registered users: ${totalUsers ?? 'N/A'}\n` +
     `People actively searching for a match right now: ${activeNow ?? 'N/A'}\n` +
@@ -687,6 +687,29 @@ async function handleMessage(msg, waName) {
 
   // Restart — always fresh start
   if (text === 'RESTART' || text === 'START') return startOrResume(phone, user, waName, true);
+
+  // ── Referral deep-link: "Hi CODE" sent by tapping the shared invite link ──
+  // Pre-fills referred_by so onboarding skips the manual referral prompt.
+  if (rawText.toUpperCase().startsWith('HI ')) {
+    const parts = rawText.trim().split(/\s+/);
+    if (parts.length === 2) {
+      const potentialCode = parts[1].toUpperCase();
+      if (potentialCode.length >= 4 && !user?.referred_by && user?.referral_code !== potentialCode) {
+        const { data: referrer } = await supabase
+          .from('users').select('name').eq('referral_code', potentialCode).maybeSingle();
+        if (referrer) {
+          await upsertUser(phone, { referred_by: potentialCode });
+          await sendText(phone,
+            `🎉 Welcome! You were invited by *${referrer.name || 'a friend'}*!\n\n` +
+            `You'll get *₹100* on your first cab search — whether you find a match or not! 💰`
+          );
+        }
+      }
+      // Re-fetch so startOrResume sees the updated referred_by
+      return startOrResume(phone, await getUser(phone), waName, false);
+    }
+  }
+
   if (text === 'HI' || text === '' && state === 'IDLE') return startOrResume(phone, user, waName, false);
 
   // ── Referral & reward global commands ────────────────────────────────────
@@ -828,7 +851,12 @@ async function handleMessage(msg, waName) {
         const code = await generateReferralCode(freshUser?.name || 'USR');
         await upsertUser(phone, { referral_code: code });
       }
-      // Ask if they were referred before starting cab search
+      // Skip referral prompt if code was already captured via deep link
+      const afterGender = await getUser(phone);
+      if (afterGender?.referred_by) {
+        await setState(phone, 'ONBOARDING_PICKUP');
+        return sendPickupPrompt(phone, false);
+      }
       await setState(phone, 'ONBOARDING_REFERRAL');
       return sendReferralPrompt(phone);
     }
