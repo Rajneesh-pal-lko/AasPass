@@ -67,63 +67,58 @@ router.get('/', requireAuth, (req, res) => {
 
 router.get('/api/conversations', requireAuth, async (req, res) => {
   try {
-    // Select only guaranteed columns; message_type is optional (may not exist on all envs)
-    const { data: rawData, error } = await supabase
-      .from('message_logs')
-      .select('phone, message_text, direction, created_at, message_type')
-      .order('created_at', { ascending: false })
-      .limit(5000)
+    // Source of truth: all registered users (not just those with message_logs entries)
+    const { data: users, error: usersError } = await supabase
+      .from('users')
+      .select('phone, name, state, is_active, is_matched, flight_number, updated_at, created_at')
+      .order('updated_at', { ascending: false })
+      .limit(500)
+    if (usersError) throw usersError
 
-    // If message_type column doesn't exist, fall back to selecting without it
-    let data = rawData
-    if (error) {
-      if (error.message && error.message.includes('message_type')) {
-        const { data: fallback, error: err2 } = await supabase
-          .from('message_logs')
-          .select('phone, message_text, direction, created_at')
-          .order('created_at', { ascending: false })
-        if (err2) throw err2
-        data = fallback
-      } else {
-        throw error
-      }
-    }
+    if (!users?.length) return res.json([])
 
-    const convMap = {}
-    for (const msg of (data || [])) {
-      if (!convMap[msg.phone]) {
-        convMap[msg.phone] = {
-          phone: msg.phone,
-          lastMessage: msg.message_text,
+    const phones = users.map(u => u.phone)
+
+    // Fetch recent messages and wa_names in parallel
+    const [logsResult, profilesResult] = await Promise.all([
+      supabase
+        .from('message_logs')
+        .select('phone, message_text, direction, created_at, message_type')
+        .in('phone', phones)
+        .order('created_at', { ascending: false })
+        .limit(2000),
+      supabase.from('user_profiles').select('phone, wa_name').in('phone', phones),
+    ])
+
+    // Build last-message summary per phone from logs
+    const msgMap = {}
+    for (const msg of (logsResult.data || [])) {
+      if (!msgMap[msg.phone]) {
+        msgMap[msg.phone] = {
+          lastMessage:     msg.message_text,
           lastMessageType: msg.message_type || null,
-          lastDirection: msg.direction,
-          lastTime: msg.created_at,
-          messageCount: 0,
+          lastDirection:   msg.direction,
+          lastTime:        msg.created_at,
+          messageCount:    0,
         }
       }
-      convMap[msg.phone].messageCount++
+      msgMap[msg.phone].messageCount++
     }
-
-    const phones = Object.keys(convMap)
-    if (phones.length === 0) return res.json([])
-
-    // user_profiles may not exist on all envs — gracefully handle
-    const [profilesResult, usersResult] = await Promise.all([
-      supabase.from('user_profiles').select('phone, wa_name').in('phone', phones),
-      supabase.from('users').select('phone, state, flight_number, is_active, is_matched').in('phone', phones),
-    ])
 
     const profileMap = {}
     for (const p of (profilesResult.data || [])) profileMap[p.phone] = p.wa_name
-    const userMap = {}
-    for (const u of (usersResult.data || [])) userMap[u.phone] = u
 
-    const conversations = Object.values(convMap).map(c => ({
-      ...c,
-      name:         profileMap[c.phone] || null,
-      state:        userMap[c.phone]?.state || 'IDLE',
-      flightNumber: userMap[c.phone]?.flight_number || null,
-      isActive:     userMap[c.phone]?.is_active || false,
+    const conversations = users.map(u => ({
+      phone:           u.phone,
+      name:            profileMap[u.phone] || u.name || null,
+      state:           u.state || 'IDLE',
+      flightNumber:    u.flight_number || null,
+      isActive:        u.is_active || false,
+      lastMessage:     msgMap[u.phone]?.lastMessage     || '',
+      lastMessageType: msgMap[u.phone]?.lastMessageType || null,
+      lastDirection:   msgMap[u.phone]?.lastDirection   || 'incoming',
+      lastTime:        msgMap[u.phone]?.lastTime        || u.updated_at || u.created_at,
+      messageCount:    msgMap[u.phone]?.messageCount    || 0,
     })).sort((a, b) => new Date(b.lastTime) - new Date(a.lastTime))
 
     res.json(conversations)
