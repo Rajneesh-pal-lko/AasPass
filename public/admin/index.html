@@ -295,6 +295,115 @@
     .toast { display: none; padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-top: 8px; }
     .toast.success { background: #003d2e; color: #00a884; }
     .toast.error   { background: #4a0000; color: #ff6b6b; }
+
+    /* ── Mobile back button (hidden on desktop) ── */
+    .mobile-back {
+      display: none; padding: 6px 10px; background: #2a3942; border: none;
+      border-radius: 6px; color: #e9edef; font-size: 18px; cursor: pointer;
+      margin-right: 8px;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════════
+       MOBILE STYLES (≤ 768px)
+       ═══════════════════════════════════════════════════════════════════════════ */
+    @media (max-width: 768px) {
+
+      /* Topbar — collapse to brand + sign out only, hide stats inline */
+      .topbar { padding: 8px 12px; }
+      .topbar h1 { font-size: 14px; }
+      .topbar .stats { display: none; }
+      .topbar .actions .btn-danger { display: none; } /* hide Clear Msgs on mobile */
+      .topbar .actions .btn-secondary[onclick="loadStats()"] { display: none; }
+      .btn { padding: 7px 10px; font-size: 12px; }
+      .btn-sm { padding: 6px 10px; font-size: 11px; }
+
+      /* Tab bar — slightly tighter */
+      .tab-btn { padding: 10px 12px; font-size: 12px; }
+
+      /* CONVERSATIONS — single-column with slide between list and chat */
+      .sidebar { width: 100%; border-right: none; }
+      .chat-panel {
+        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+        z-index: 5; display: none;
+      }
+      body.mobile-show-chat .sidebar { display: none; }
+      body.mobile-show-chat .chat-panel { display: flex; }
+      .mobile-back { display: inline-block; }
+
+      .messages-area { padding: 12px 12px 80px 12px; }
+      .bubble { max-width: 85%; }
+      .chat-header { padding: 8px 12px; }
+      .chat-header .user-name { font-size: 14px; }
+      .chat-header .user-sub { font-size: 11px; }
+      .chat-header .detail-btn { padding: 6px 8px; font-size: 11px; }
+
+      /* Detail panel — full-screen overlay on mobile */
+      .detail-panel {
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        width: 100%; z-index: 100;
+      }
+      .detail-panel.open { display: flex; }
+      .detail-header {
+        position: sticky; top: 0; z-index: 1;
+        display: flex; align-items: center; gap: 10px;
+      }
+      .detail-header .close-btn {
+        background: none; border: none; color: #e9edef; font-size: 22px;
+        cursor: pointer; padding: 0 6px;
+      }
+
+      /* Conversation row — slightly bigger tap targets */
+      .conv-item { padding: 14px 14px; }
+      .avatar { width: 42px; height: 42px; font-size: 16px; }
+      .conv-name { max-width: calc(100vw - 160px); }
+
+      /* Tab content — less padding */
+      .tab-content { padding: 12px; }
+
+      /* Summary cards — 2-up grid on mobile */
+      .summary-row { gap: 8px; }
+      .summary-card { min-width: calc(50% - 4px); flex: 1 1 calc(50% - 4px); padding: 10px 12px; }
+      .summary-card .s-val { font-size: 20px; }
+
+      /* Tables — horizontal scroll */
+      .data-table { font-size: 11px; }
+      .data-table th, .data-table td { padding: 7px 8px; }
+      table.data-table {
+        display: block; overflow-x: auto; white-space: nowrap;
+      }
+      .expanded-row td { white-space: normal; }
+
+      /* Filter bar — wrap nicely */
+      .filter-bar { gap: 6px; }
+      .filter-btn { padding: 6px 10px; font-size: 11px; }
+
+      /* Cards — full width */
+      .card { padding: 12px; }
+      .card-title { font-size: 13px; }
+      .card-body { font-size: 12px; }
+
+      /* Analytics — single column */
+      .charts-grid { grid-template-columns: 1fr; }
+      .chart-wrap { height: 220px; }
+      .chart-card[style*="grid-column"] { grid-column: 1 / -1 !important; }
+
+      /* Broadcast */
+      .broadcast-wrap { max-width: 100%; }
+      .form-textarea { font-size: 14px; } /* avoid iOS zoom on focus */
+      .filter-input { font-size: 14px; }
+
+      /* Section headers — stack */
+      .section-hdr h3 { font-size: 13px; }
+
+      /* Funnel — give bars some room */
+      .funnel-step .f-label { width: 70px; font-size: 11px; }
+    }
+
+    /* ── Very small screens (≤ 380px) ── */
+    @media (max-width: 380px) {
+      .summary-card { min-width: 100%; flex: 1 1 100%; }
+      .topbar h1 { font-size: 13px; }
+    }
   </style>
 </head>
 <body>
@@ -672,10 +781,22 @@ function filterConversations() {
 
 let lastRenderedSig = ''
 
+function closeChat() {
+  activePhone = null
+  if (autoRefresh) { clearInterval(autoRefresh); autoRefresh = null }
+  document.body.classList.remove('mobile-show-chat')
+  document.getElementById('detail-panel').classList.remove('open')
+  detailOpen = false
+  document.getElementById('chat-view').style.display = 'none'
+  document.getElementById('empty-chat').style.display = 'flex'
+  renderConversations(conversations)
+}
+
 async function openChat(phone) {
   activePhone = phone
   detailOpen  = false
   lastRenderedSig = ''
+  document.body.classList.add('mobile-show-chat')
   document.getElementById('detail-panel').classList.remove('open')
   document.getElementById('empty-chat').style.display = 'none'
   document.getElementById('chat-view').style.display = 'flex'
@@ -701,6 +822,7 @@ async function openChat(phone) {
 function renderChatHeader(conv, phone) {
   const name = conv?.name || formatPhone(phone)
   document.getElementById('chat-header').innerHTML = `
+    <button class="mobile-back" onclick="closeChat()" aria-label="Back">←</button>
     <div class="avatar ${conv?.isActive ? 'active-user' : ''}" style="width:38px;height:38px;font-size:15px">
       ${(conv?.name || phone).charAt(0).toUpperCase()}
     </div>
@@ -708,7 +830,7 @@ function renderChatHeader(conv, phone) {
       <div class="user-name">${escHtml(name)}</div>
       <div class="user-sub">${formatPhone(phone)} · ${conv?.state || 'IDLE'}${conv?.flightNumber ? ' · ✈ ' + conv.flightNumber : ''}</div>
     </div>
-    <button class="detail-btn" onclick="toggleDetail('${phone}')">👤 User Details</button>
+    <button class="detail-btn" onclick="toggleDetail('${phone}')">👤 Details</button>
   `
 }
 
@@ -773,7 +895,10 @@ async function toggleDetail(phone) {
   const { user, profile, matches } = await fetch(`/admin/api/user/${phone}`).then(r => r.json())
 
   panel.innerHTML = `
-    <div class="detail-header"><h3>👤 User Details</h3></div>
+    <div class="detail-header">
+      <button class="close-btn" onclick="document.getElementById('detail-panel').classList.remove('open');detailOpen=false" aria-label="Close" style="background:none;border:none;color:#e9edef;font-size:22px;cursor:pointer;padding:0 6px">✕</button>
+      <h3 style="flex:1">👤 User Details</h3>
+    </div>
 
     <div class="detail-section">
       <h4>Admin Actions</h4>
