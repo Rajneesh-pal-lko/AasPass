@@ -670,9 +670,12 @@ function filterConversations() {
   ))
 }
 
+let lastRenderedSig = ''
+
 async function openChat(phone) {
   activePhone = phone
   detailOpen  = false
+  lastRenderedSig = ''
   document.getElementById('detail-panel').classList.remove('open')
   document.getElementById('empty-chat').style.display = 'none'
   document.getElementById('chat-view').style.display = 'flex'
@@ -683,13 +686,15 @@ async function openChat(phone) {
   document.getElementById('messages-area').innerHTML = '<div class="loading">Loading...</div>'
 
   const msgs = await fetch(`/admin/api/messages/${phone}`).then(r => r.json())
-  renderMessages(msgs)
+  renderMessages(msgs, true)
 
   if (autoRefresh) clearInterval(autoRefresh)
   autoRefresh = setInterval(async () => {
     if (activePhone !== phone) return
-    const m = await fetch(`/admin/api/messages/${phone}`).then(r => r.json())
-    renderMessages(m)
+    try {
+      const m = await fetch(`/admin/api/messages/${phone}`).then(r => r.json())
+      renderMessages(m, false)
+    } catch (_) {}
   }, 5000)
 }
 
@@ -707,9 +712,24 @@ function renderChatHeader(conv, phone) {
   `
 }
 
-function renderMessages(msgs) {
+function renderMessages(msgs, forceScroll) {
   const area = document.getElementById('messages-area')
-  if (!msgs.length) { area.innerHTML = '<div class="loading">No messages yet</div>'; return }
+  if (!Array.isArray(msgs) || !msgs.length) {
+    if (lastRenderedSig !== 'EMPTY') {
+      area.innerHTML = '<div class="loading">No messages yet</div>'
+      lastRenderedSig = 'EMPTY'
+    }
+    return
+  }
+
+  // Skip re-render if message set is unchanged — prevents flicker every 5s poll
+  const sig = msgs.length + '|' + (msgs[msgs.length - 1]?.id || '') + '|' + (msgs[msgs.length - 1]?.created_at || '')
+  if (sig === lastRenderedSig && !forceScroll) return
+
+  // Only auto-scroll if user is near the bottom OR this is initial load
+  const nearBottom = area.scrollHeight - area.scrollTop - area.clientHeight < 100
+  const shouldScroll = forceScroll || nearBottom
+
   let lastDate = '', html = ''
   for (const msg of msgs) {
     const date = new Date(msg.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -734,7 +754,8 @@ function renderMessages(msgs) {
       </div>`
   }
   area.innerHTML = html
-  area.scrollTop = area.scrollHeight
+  lastRenderedSig = sig
+  if (shouldScroll) area.scrollTop = area.scrollHeight
 }
 
 function toggleRaw(id) {

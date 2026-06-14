@@ -19,6 +19,14 @@ function requireAuth(req, res, next) {
   res.redirect(`/admin/login${keyParam}`)
 }
 
+// Disable HTTP caching on all admin API responses — browsers were returning 304s
+// and rendering stale data (new messages never appeared).
+router.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  res.set('Pragma', 'no-cache')
+  next()
+})
+
 // ── Audit logger (fire-and-forget) ────────────────────────────────────────────
 async function auditLog(action, targetPhone, details = {}) {
   try {
@@ -130,11 +138,14 @@ router.get('/api/conversations', requireAuth, async (req, res) => {
 
 router.get('/api/messages/:phone', requireAuth, async (req, res) => {
   try {
+    // Fetch the NEWEST 500 messages, then reverse for chronological display.
+    // Previously this used ascending+limit which hid recent messages for
+    // any phone with > 500 historical messages.
     const { data, error } = await supabase
       .from('message_logs').select('*').eq('phone', req.params.phone)
-      .order('created_at', { ascending: true }).limit(500)
+      .order('created_at', { ascending: false }).limit(500)
     if (error) throw error
-    res.json(data)
+    res.json((data || []).reverse())
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
