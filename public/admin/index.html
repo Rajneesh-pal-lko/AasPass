@@ -87,6 +87,7 @@
       display: flex;
       flex: 1;
       overflow: hidden;
+      position: relative; /* containing block for mobile chat-panel overlay */
     }
 
     /* ── Left panel ── */
@@ -302,6 +303,8 @@
       border-radius: 6px; color: #e9edef; font-size: 18px; cursor: pointer;
       margin-right: 8px;
     }
+    /* Detail-panel close button — only shown on mobile */
+    .detail-header .close-btn { display: none; }
 
     /* ═══════════════════════════════════════════════════════════════════════════
        MOBILE STYLES (≤ 768px)
@@ -348,6 +351,7 @@
         display: flex; align-items: center; gap: 10px;
       }
       .detail-header .close-btn {
+        display: inline-block;
         background: none; border: none; color: #e9edef; font-size: 22px;
         cursor: pointer; padding: 0 6px;
       }
@@ -655,6 +659,8 @@ let liveRefreshTimer = null
 function switchTab(name) {
   if (liveRefreshTimer) { clearInterval(liveRefreshTimer); liveRefreshTimer = null }
   if (autoRefresh) { clearInterval(autoRefresh); autoRefresh = null }
+  // Leaving conversations on mobile? Drop the chat overlay so user lands on the list when they return.
+  if (name !== 'conversations') document.body.classList.remove('mobile-show-chat')
 
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name))
   document.querySelectorAll('.tab-pane').forEach(p => {
