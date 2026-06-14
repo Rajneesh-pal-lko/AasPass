@@ -72,6 +72,7 @@ router.get('/api/conversations', requireAuth, async (req, res) => {
       .from('message_logs')
       .select('phone, message_text, direction, created_at, message_type')
       .order('created_at', { ascending: false })
+      .limit(5000)
 
     // If message_type column doesn't exist, fall back to selecting without it
     let data = rawData
@@ -194,10 +195,10 @@ router.get('/api/live/waiting-pool', requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('users')
-      .select('phone, name, departure_airport, drop_zone, arrival_time, search_started_at, gender, user_profiles(wa_name)')
+      .select('phone, name, departure_airport, drop_zone, arrival_time, updated_at, gender')
       .eq('state', 'WAITING')
       .eq('is_active', true)
-      .order('search_started_at', { ascending: true })
+      .order('updated_at', { ascending: true })
     if (error) throw error
     res.json({ users: data || [], count: data?.length || 0 })
   } catch (err) { res.status(500).json({ error: err.message }) }
@@ -226,7 +227,7 @@ router.get('/api/live/today-summary', requireAuth, async (req, res) => {
 
     const [s, m, w, p] = await Promise.all([
       supabase.from('users').select('*', { count: 'exact', head: true }).gte('created_at', todayIso),
-      supabase.from('confirmed_matches').select('*', { count: 'exact', head: true }).gte('confirmed_at', todayIso),
+      supabase.from('match_requests').select('*', { count: 'exact', head: true }).eq('status', 'completed').gte('created_at', todayIso),
       supabase.from('users').select('*', { count: 'exact', head: true }).eq('state', 'WAITING').eq('is_active', true),
       supabase.from('match_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
     ])

@@ -545,6 +545,7 @@ let liveRefreshTimer = null
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
   if (liveRefreshTimer) { clearInterval(liveRefreshTimer); liveRefreshTimer = null }
+  if (autoRefresh) { clearInterval(autoRefresh); autoRefresh = null }
 
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name))
   document.querySelectorAll('.tab-pane').forEach(p => {
@@ -869,11 +870,11 @@ async function loadLiveOps() {
     } else {
       poolBody.innerHTML = pool.users.map(u => `
         <tr onclick="switchTab('conversations');openChat('${u.phone}')">
-          <td><strong>${escHtml(u.name || u.user_profiles?.wa_name || '—')}</strong><br><span class="muted">${formatPhone(u.phone)}</span></td>
+          <td><strong>${escHtml(u.name || '—')}</strong><br><span class="muted">${formatPhone(u.phone)}</span></td>
           <td>${u.departure_airport || '—'}</td>
           <td>${escHtml(u.drop_zone || '—')}</td>
           <td>${u.arrival_time || '—'}</td>
-          <td>${timeAgo(u.search_started_at)}</td>
+          <td>${timeAgo(u.updated_at)}</td>
           <td>${u.gender || 'NS'}</td>
         </tr>`).join('')
     }
